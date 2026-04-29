@@ -27,130 +27,69 @@ with open(path,‘r’,encoding=‘utf-8’,errors=‘ignore’) as f: return f.
 
 def parse_with_claude(raw_text, company_name=””):
 client = anthropic.Anthropic()
-prompt = f””“You are an expert MCA (Merchant Cash Advance) underwriter analyzing Chase bank statements.
+prompt = f””“You are an expert MCA underwriter analyzing bank statements. You are the LENDER.
+Return ONLY valid JSON, no markdown, no explanation.
 
-IMPORTANT CONTEXT - You are the LENDER evaluating whether to lend money to this business.
-
-Analyze the bank statement text below and extract ALL data. Return ONLY valid JSON, no markdown.
-
-CRITICAL: There may be MULTIPLE months of statements in the text separated by “=== FILE:” markers. Extract EVERY month found into the months array - do NOT skip any month.
-
-Bank Statement Text:
+BANK STATEMENT TEXT (may contain multiple months):
 {raw_text[:80000]}
 
-EXTRACTION RULES:
+CRITICAL INSTRUCTIONS:
 
-1. true_deposits = total_deposits MINUS:
-- Fedwire/incoming wire credits that are MCA fundings (look for lender names in B/O field like “SQ ADVANCE LLC”, “GARDEN FUNDING”, “KYLE CAPITAL LLC”, “NYC ADVANCE GROUP”, “EMMY CAPITAL”, “PARKVIEW ADVANCE”, “SHILENO LLC” used as passthrough)
-- Online transfers FROM other own accounts (e.g. “Online Transfer From Chk …6837”)
-- Book Transfer Credits between own accounts
-- Hunter Caroline reversal credits (these are reversals of MCA debits, not real revenue)
-1. current_positions = ALL active MCA lenders found as recurring ACH debits in electronic withdrawals:
-- Look for: Hunter Caroline, LG Funding LLC, Garden Funding L, SQ Advance, Libertasfunding, Catalystadvance, Kyle Capital, EMMY CAPITAL GROUP, Parkview Advance, NYC Advance Group
-- Use the most recent repayment amount for each
-1. adb = average of all daily ending balances shown in “DAILY ENDING BALANCE” section
-1. days_below_1000 = count days where daily ending balance < 1000 (including negative days)
-1. neg_days = count days where daily ending balance is negative (< 0)
-1. nsf_count = count “NSF” or “Returned Item” or “Insufficient” entries in fees
-1. od_count = count overdraft fees
-1. funding_events = Fedwire/incoming wire credits that are MCA fundings - identify funder from B/O field
-1. For “Shileno LLC” wires - these appear to be client payments (fence/construction work), NOT MCA fundings - INCLUDE in true deposits
-1. LIBERTAS FUNDING #1 stopped after 03/09 per the analysis sheet - note this
-1. holdback_pct: estimate based on total MCA repayments / total deposits (as percentage)
+1. Find EVERY statement period in the text. Look for “CHECKING SUMMARY” headers and date ranges like “January 31, 2026 through February 27, 2026”. Each is a separate month.
+1. Extract ALL months found - do not skip any.
+1. Most recent partial month gets is_mtd = true.
 
-Return this exact JSON:
+FOR EACH MONTH:
+
+- total_deposits: “Deposits and Additions” total from CHECKING SUMMARY
+- true_deposits: total_deposits minus MCA funding Fedwires (B/O field shows lender names like SQ ADVANCE, GARDEN FUNDING, KYLE CAPITAL, NYC ADVANCE GROUP, EMMY CAPITAL, PARKVIEW ADVANCE) and minus “Online Transfer From Chk” entries
+- Shileno LLC wires are real client payments - KEEP in true deposits
+- adb: average of all values in DAILY ENDING BALANCE table
+- neg_days: count of negative balances in DAILY ENDING BALANCE table
+- days_below_1000: count of balances under 1000 in DAILY ENDING BALANCE table
+- funding_events: incoming Fedwire credits that are MCA loans (get funder name from B/O field)
+
+FOR CURRENT POSITIONS: find all recurring ACH debits (Electronic Withdrawals section) - these are MCA lenders. Use most recent amount per lender.
+
+Return this JSON structure:
 {{
-“company_name”: “CHIEF TOP REMODELING INC”,
-“account_number_last4”: “9526”,
+“company_name”: “string”,
+“account_number_last4”: “string”,
 “num_bank_accounts”: 1,
 “offer_decline”: “DECLINE”,
-“holdback_pct”: 13.78,
-“sos_info”: “Active 07/21/2022”,
+“holdback_pct”: 0.0,
+“sos_info”: “”,
 “court_search_notes”: “”,
-“account_notes”: [“inconsistent revenue”, “many days < $1,000 in Feb”],
-“total_current_positions”: 95405.04,
+“account_notes”: [],
+“total_current_positions”: 0.0,
 “current_positions”: [
-{{“lender”: “NYC ADVANCE GROUP”, “amount”: 0, “frequency”: “weekly”, “notes”: “re-payments not started yet / not found”}},
-{{“lender”: “Parkview Advance”, “amount”: 2500.00, “frequency”: “weekly”, “notes”: “only 1 re-payment on 04/21”}},
-{{“lender”: “EMMY CAPITAL GROUP”, “amount”: 3295.46, “frequency”: “weekly”, “notes”: “only 1 re-payment on 04/24”}},
-{{“lender”: “Kyle Capital”, “amount”: 3182.00, “frequency”: “weekly”, “notes”: “”}},
-{{“lender”: “LIBERTAS FUNDING #2”, “amount”: 803.55, “frequency”: “weekly”, “notes”: “”}},
-{{“lender”: “LG Funding LLC #2”, “amount”: 1995.00, “frequency”: “weekly”, “notes”: “”}},
-{{“lender”: “LG Funding LLC #1”, “amount”: 1750.00, “frequency”: “weekly”, “notes”: “”}},
-{{“lender”: “SQ ADVANCE”, “amount”: 2900.00, “frequency”: “weekly”, “notes”: “”}},
-{{“lender”: “Catalystadvance”, “amount”: 1421.00, “frequency”: “weekly”, “notes”: “”}},
-{{“lender”: “GARDEN FUNDING”, “amount”: 2998.00, “frequency”: “weekly”, “notes”: “$1,986.18 weekly before 03/06”}},
-{{“lender”: “HUNTER CAROLINE”, “amount”: 3006.25, “frequency”: “weekly”, “notes”: “seems an MCA”}},
-{{“lender”: “LIBERTAS FUNDING #1”, “amount”: 1060.70, “frequency”: “weekly”, “notes”: “stopped after 03/09, last repayment $1,061.30 on 03/09”}}
+{{“lender”: “name”, “amount”: 0.0, “frequency”: “weekly”, “notes”: “”}}
 ],
 “months”: [
 {{
-“month_label”: “Apr-26”,
-“period”: “04/01 to 04/24”,
-“is_mtd”: true,
-“total_deposits”: 396900.00,
-“true_deposits”: 282850.00,
-“true_deposit_notes”: “incl. Fedwire Credit B/O: Shileno LLC Bnf=Chief Top Remodeling amounting $550”,
-“neg_days”: 1,
-“nsf_count”: 0,
-“od_count”: 0,
-“num_transactions”: 24,
-“adb”: 10519.22,
-“days_below_1000”: 7,
-“funding_events”: [
-{{“funder”: “NYC Group Advance”, “amount”: 36000.00, “date”: “04/23”}},
-{{“funder”: “PARKVIEW ADVANCE”, “amount”: 29100.00, “date”: “04/14”}},
-{{“funder”: “EMMY CAPITAL”, “amount”: 47500.00, “date”: “04/15”}}
-],
-“notes”: “”
-}},
-{{
-“month_label”: “Mar-26”,
-“period”: “02/28 to 03/31”,
+“month_label”: “Mon-YY”,
+“period”: “MM/DD to MM/DD”,
 “is_mtd”: false,
-“total_deposits”: 1181009.65,
-“true_deposits”: 1128329.00,
-“true_deposit_notes”: “incl. Fedwire Credit B/O: Shileno LLC Bnf=Chief Top Remodeling amounting $2,500”,
-“neg_days”: 2,
-“nsf_count”: 0,
-“od_count”: 0,
-“num_transactions”: 320,
-“adb”: 6620.58,
-“days_below_1000”: 8,
-“funding_events”: [
-{{“funder”: “Kyle Capital LLC”, “amount”: 47500.00, “date”: “03/19”}}
-],
-“notes”: “”
-}},
-{{
-“month_label”: “Feb-26”,
-“period”: “01/31 to 02/27”,
-“is_mtd”: false,
-“total_deposits”: 816358.37,
-“true_deposits”: 739964.00,
-“true_deposit_notes”: “incl. Fedwire Credit B/O: Shileno LLC Bnf=Chief Top Remodeling amounting $2,000; incl. Book Transfer Credit B/O: …”,
+“total_deposits”: 0.0,
+“true_deposits”: 0.0,
+“true_deposit_notes”: “”,
 “neg_days”: 0,
 “nsf_count”: 0,
 “od_count”: 0,
-“num_transactions”: 225,
-“adb”: 7802.52,
-“days_below_1000”: 9,
-“funding_events”: [
-{{“funder”: “Sq Advance LLC”, “amount”: 47500.00, “date”: “02/12”}},
-{{“funder”: “Garden Funding LLC”, “amount”: 25573.12, “date”: “02/27”}}
-],
-“notes”: “1 stop payment fee of $30”
+“num_transactions”: 0,
+“adb”: 0.0,
+“days_below_1000”: 0,
+“funding_events”: [{{“funder”: “name”, “amount”: 0.0, “date”: “MM/DD”}}],
+“notes”: “”
 }}
 ]
 }}
-
-Now RE-ANALYZE the actual statement text provided and return accurate JSON based on what you actually find in the text. Use the structure above as a template but populate with REAL extracted values.
-Company name override: “{company_name if company_name else ‘auto-detect’}”
+Company name if provided: “{company_name if company_name else ‘auto-detect’}”
 “””
 msg = client.messages.create(
 model=“claude-opus-4-5”,
 max_tokens=8000,
-messages=[{“role”:“user”,“content”:prompt}]
+messages=[{{“role”:“user”,“content”:prompt}}]
 )
 raw = msg.content[0].text.strip()
 raw = re.sub(r’^`json\s*','',raw); raw = re.sub(r'^`\s*’,’’,raw); raw = re.sub(r’\s*```$’,’’,raw)
