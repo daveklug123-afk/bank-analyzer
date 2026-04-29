@@ -437,6 +437,7 @@ def analyze():
     return send_file(excel,as_attachment=True,download_name=f"{safe}_analysis.xlsx",
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
 if __name__=='__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5001)))
