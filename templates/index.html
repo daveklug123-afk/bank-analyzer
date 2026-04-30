@@ -7,483 +7,118 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --gold: #C8962A;
-    --gold-light: #F0C85A;
-    --gold-pale: #FDF6E3;
-    --dark: #1A1410;
-    --dark-mid: #2D2418;
-    --text: #3D2E1A;
-    --text-muted: #8C7355;
-    --border: #D4B87A;
-    --border-light: #EDD99A;
-    --green: #2E7D32;
-    --green-bg: #E8F5E9;
-    --red: #C62828;
-    --red-bg: #FFEBEE;
-    --surface: #FFFDF5;
-    --surface-2: #FBF5E0;
+    --gold: #C8962A; --gold-pale: #FDF6E3; --dark: #1A1410;
+    --text: #3D2E1A; --text-muted: #8C7355;
+    --border: #D4B87A; --border-light: #EDD99A;
+    --green: #2E7D32; --green-bg: #E8F5E9;
+    --red: #C62828; --red-bg: #FFEBEE;
+    --surface: #FFFDF5; --surface-2: #FBF5E0;
   }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'DM Sans',sans-serif; background:var(--surface); color:var(--text); min-height:100vh; }
+  .page { max-width:780px; margin:0 auto; padding:48px 24px 80px; }
+  .header { text-align:center; margin-bottom:48px; }
+  .header-badge { display:inline-block; font-family:'DM Mono',monospace; font-size:10px; font-weight:500; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); border:1px solid var(--border); padding:6px 16px; border-radius:2px; background:var(--gold-pale); margin-bottom:20px; }
+  h1 { font-family:'DM Serif Display',serif; font-size:clamp(32px,6vw,52px); color:var(--dark); line-height:1.1; margin-bottom:12px; letter-spacing:-.02em; }
+  h1 em { font-style:italic; color:var(--gold); }
+  .subtitle { font-size:15px; color:var(--text-muted); line-height:1.6; max-width:480px; margin:0 auto; }
+  .divider { display:flex; align-items:center; gap:16px; margin:40px 0; color:var(--border); }
+  .divider::before,.divider::after { content:''; flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); }
+  .card { background:#FFFEFB; border:1px solid var(--border-light); border-radius:4px; box-shadow:0 2px 20px rgba(200,150,42,.08); overflow:hidden; margin-bottom:20px; }
+  .card-header { padding:20px 28px 18px; border-bottom:1px solid var(--border-light); background:var(--gold-pale); }
+  .card-title { font-family:'DM Serif Display',serif; font-size:18px; color:var(--dark); display:flex; align-items:center; gap:10px; }
+  .step-badge { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; background:var(--gold); color:white; border-radius:50%; font-family:'DM Mono',monospace; font-size:11px; font-weight:500; flex-shrink:0; }
+  .card-body { padding:28px; }
+  .field-label { display:block; font-size:12px; font-weight:500; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px; }
+  input[type=text] { width:100%; padding:12px 16px; border:1px solid var(--border); border-radius:3px; font-family:'DM Sans',sans-serif; font-size:15px; color:var(--text); background:var(--surface); outline:none; transition:border-color .2s,box-shadow .2s; }
+  input[type=text]:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,150,42,.12); }
+  input[type=text]::placeholder { color:var(--text-muted); opacity:.6; }
+  .drop-zone { border:2px dashed var(--border); border-radius:4px; padding:40px 24px; text-align:center; cursor:pointer; transition:all .25s ease; background:var(--surface-2); }
+  .drop-zone:hover,.drop-zone.drag-over { border-color:var(--gold); background:var(--gold-pale); transform:translateY(-1px); box-shadow:0 4px 16px rgba(200,150,42,.12); }
+  .drop-icon { font-size:36px; margin-bottom:12px; display:block; }
+  .drop-title { font-family:'DM Serif Display',serif; font-size:18px; color:var(--dark); margin-bottom:6px; }
+  .drop-sub { font-size:13px; color:var(--text-muted); }
+  .drop-sub strong { color:var(--gold); font-weight:600; }
+  #file-input { display:none; }
+  .file-list { margin-top:16px; display:flex; flex-direction:column; gap:8px; }
+  .file-item { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:3px; font-size:13px; }
+  .file-name { flex:1; font-weight:500; color:var(--dark); }
+  .file-size { color:var(--text-muted); font-family:'DM Mono',monospace; font-size:11px; }
+  .file-remove { cursor:pointer; color:var(--text-muted); font-size:18px; padding:2px 6px; border-radius:2px; }
+  .file-remove:hover { color:var(--red); }
+  .btn { width:100%; padding:16px 24px; border:none; border-radius:3px; font-family:'DM Sans',sans-serif; font-size:15px; font-weight:600; letter-spacing:.04em; cursor:pointer; transition:all .2s ease; display:flex; align-items:center; justify-content:center; gap:10px; }
+  .btn-gold { background:linear-gradient(135deg,#C8962A 0%,#A07020 100%); color:white; box-shadow:0 2px 8px rgba(200,150,42,.3); }
+  .btn-gold:hover:not(:disabled) { background:linear-gradient(135deg,#D4A030 0%,#B08030 100%); transform:translateY(-1px); box-shadow:0 4px 16px rgba(200,150,42,.4); }
+  .btn:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+  .status-panel { display:none; margin-top:20px; padding:20px 24px; border-radius:4px; border:1px solid; }
+  .status-panel.loading { display:flex; align-items:flex-start; gap:16px; background:#FFF8E1; border-color:#FFD54F; }
+  .status-panel.success { display:flex; align-items:flex-start; gap:16px; background:var(--green-bg); border-color:#81C784; }
+  .status-panel.error { display:flex; align-items:flex-start; gap:16px; background:var(--red-bg); border-color:#EF9A9A; }
+  .status-text h3 { font-family:'DM Serif Display',serif; font-size:16px; margin-bottom:4px; }
+  .status-panel.loading h3 { color:#795548; }
+  .status-panel.success h3 { color:var(--green); }
+  .status-panel.error h3 { color:var(--red); }
+  .status-text p { font-size:13px; line-height:1.5; color:var(--text-muted); }
+  .spinner { width:24px; height:24px; border:2px solid rgba(200,150,42,.2); border-top-color:var(--gold); border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: 'DM Sans', sans-serif;
-    background: var(--surface);
-    color: var(--text);
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  /* Decorative background */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-      radial-gradient(ellipse 80% 50% at 10% 10%, rgba(200,150,42,0.06) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 40% at 90% 80%, rgba(200,150,42,0.04) 0%, transparent 60%);
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  .page {
-    position: relative;
-    z-index: 1;
-    max-width: 780px;
-    margin: 0 auto;
-    padding: 48px 24px 80px;
-  }
-
-  /* Header */
-  .header {
-    text-align: center;
-    margin-bottom: 48px;
-  }
-
-  .header-badge {
-    display: inline-block;
-    font-family: 'DM Mono', monospace;
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--gold);
-    border: 1px solid var(--border);
-    padding: 6px 16px;
-    border-radius: 2px;
-    background: var(--gold-pale);
-    margin-bottom: 20px;
-  }
-
-  h1 {
-    font-family: 'DM Serif Display', serif;
-    font-size: clamp(32px, 6vw, 52px);
-    color: var(--dark);
-    line-height: 1.1;
-    margin-bottom: 12px;
-    letter-spacing: -0.02em;
-  }
-
-  h1 em {
-    font-style: italic;
-    color: var(--gold);
-  }
-
-  .subtitle {
-    font-size: 15px;
-    color: var(--text-muted);
-    line-height: 1.6;
-    max-width: 480px;
-    margin: 0 auto;
-  }
-
-  /* Divider */
-  .divider {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin: 40px 0;
-    color: var(--border);
-  }
-  .divider::before, .divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--border), transparent);
-  }
-  .divider-icon { font-size: 18px; }
-
-  /* Card */
-  .card {
-    background: #FFFEFB;
-    border: 1px solid var(--border-light);
-    border-radius: 4px;
-    box-shadow: 0 2px 20px rgba(200,150,42,0.08), 0 1px 4px rgba(0,0,0,0.04);
-    overflow: hidden;
-  }
-
-  .card-header {
-    padding: 20px 28px 18px;
-    border-bottom: 1px solid var(--border-light);
-    background: var(--gold-pale);
-  }
-
-  .card-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 18px;
-    color: var(--dark);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .step-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    background: var(--gold);
-    color: white;
-    border-radius: 50%;
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    flex-shrink: 0;
-  }
-
-  .card-body { padding: 28px; }
-
-  /* Company input */
-  .field-label {
-    display: block;
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin-bottom: 8px;
-  }
-
-  input[type="text"] {
-    width: 100%;
-    padding: 12px 16px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    font-family: 'DM Sans', sans-serif;
-    font-size: 15px;
-    color: var(--text);
-    background: var(--surface);
-    outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  input[type="text"]:focus {
-    border-color: var(--gold);
-    box-shadow: 0 0 0 3px rgba(200,150,42,0.12);
-  }
-  input[type="text"]::placeholder { color: var(--text-muted); opacity: 0.6; }
-
-  /* Drop zone */
-  .drop-zone {
-    border: 2px dashed var(--border);
-    border-radius: 4px;
-    padding: 40px 24px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.25s ease;
-    background: var(--surface-2);
-    position: relative;
-  }
-  .drop-zone:hover, .drop-zone.drag-over {
-    border-color: var(--gold);
-    background: var(--gold-pale);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(200,150,42,0.12);
-  }
-
-  .drop-icon {
-    font-size: 36px;
-    margin-bottom: 12px;
-    display: block;
-    line-height: 1;
-  }
-
-  .drop-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 18px;
-    color: var(--dark);
-    margin-bottom: 6px;
-  }
-
-  .drop-sub {
-    font-size: 13px;
-    color: var(--text-muted);
-    line-height: 1.5;
-  }
-
-  .drop-sub strong {
-    color: var(--gold);
-    font-weight: 600;
-  }
-
-  #file-input { display: none; }
-
-  /* File list */
-  .file-list {
-    margin-top: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .file-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    background: var(--surface);
-    border: 1px solid var(--border-light);
-    border-radius: 3px;
-    font-size: 13px;
-    animation: slideIn 0.2s ease;
-  }
-
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateY(-6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  .file-icon { font-size: 18px; }
-  .file-name { flex: 1; font-weight: 500; color: var(--dark); }
-  .file-size { color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 11px; }
-  .file-remove {
-    cursor: pointer;
-    color: var(--text-muted);
-    font-size: 18px;
-    line-height: 1;
-    padding: 2px 6px;
-    border-radius: 2px;
-    transition: color 0.15s;
-  }
-  .file-remove:hover { color: var(--red); }
-
-  /* Analyze button */
-  .btn-analyze {
-    width: 100%;
-    padding: 16px 24px;
-    background: linear-gradient(135deg, #C8962A 0%, #A07020 100%);
-    color: white;
-    border: none;
-    border-radius: 3px;
-    font-family: 'DM Sans', sans-serif;
-    font-size: 15px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    box-shadow: 0 2px 8px rgba(200,150,42,0.3);
-  }
-  .btn-analyze:hover:not(:disabled) {
-    background: linear-gradient(135deg, #D4A030 0%, #B08030 100%);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(200,150,42,0.4);
-  }
-  .btn-analyze:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-  }
-  .btn-icon { font-size: 18px; }
-
-  /* Status panel */
-  .status-panel {
-    display: none;
-    margin-top: 20px;
-    padding: 20px 24px;
-    border-radius: 4px;
-    border: 1px solid;
-  }
-  .status-panel.loading {
-    display: flex;
-    align-items: flex-start;
-    gap: 16px;
-    background: #FFF8E1;
-    border-color: #FFD54F;
-  }
-  .status-panel.success {
-    display: flex;
-    align-items: flex-start;
-    gap: 16px;
-    background: var(--green-bg);
-    border-color: #81C784;
-  }
-  .status-panel.error {
-    display: flex;
-    align-items: flex-start;
-    gap: 16px;
-    background: var(--red-bg);
-    border-color: #EF9A9A;
-  }
-
-  .status-icon { font-size: 24px; flex-shrink: 0; }
-
-  .status-text h3 {
-    font-family: 'DM Serif Display', serif;
-    font-size: 16px;
-    margin-bottom: 4px;
-  }
-  .status-panel.loading h3 { color: #795548; }
-  .status-panel.success h3 { color: var(--green); }
-  .status-panel.error h3 { color: var(--red); }
-
-  .status-text p {
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--text-muted);
-  }
-
-  /* Spinner */
-  .spinner {
-    width: 24px;
-    height: 24px;
-    border: 2px solid rgba(200,150,42,0.2);
-    border-top-color: var(--gold);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    flex-shrink: 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Progress steps */
-  .progress-steps {
-    display: flex;
-    gap: 0;
-    margin-top: 32px;
-    border: 1px solid var(--border-light);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-
-  .progress-step {
-    flex: 1;
-    padding: 14px 12px;
-    text-align: center;
-    background: var(--surface-2);
-    border-right: 1px solid var(--border-light);
-    position: relative;
-  }
-  .progress-step:last-child { border-right: none; }
-
-  .progress-step-num {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-  }
-
-  .progress-step-label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text);
-  }
-
-  /* Footer */
-  .footer {
-    margin-top: 60px;
-    text-align: center;
-  }
-  .footer-text {
-    font-size: 12px;
-    color: var(--text-muted);
-    letter-spacing: 0.05em;
-  }
-  .footer-text strong { color: var(--gold); }
-
-  /* Formats accepted */
-  .formats {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 16px;
-    justify-content: center;
-  }
-  .format-chip {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    padding: 4px 10px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-light);
-    border-radius: 2px;
-    color: var(--text-muted);
-  }
+  /* Step 2 - Balances */
+  #step2 { display:none; }
+  .lender-row { display:grid; grid-template-columns:1fr 180px; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border-light); }
+  .lender-row:last-child { border-bottom:none; }
+  .lender-name { font-size:14px; font-weight:500; color:var(--dark); }
+  .lender-weekly { font-size:12px; color:var(--text-muted); margin-top:2px; }
+  .balance-input { padding:10px 12px; border:1px solid var(--border); border-radius:3px; font-family:'DM Mono',monospace; font-size:13px; color:var(--text); width:100%; outline:none; }
+  .balance-input:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,150,42,.12); }
+  .total-row { display:flex; justify-content:space-between; align-items:center; padding:14px 0 0; margin-top:8px; border-top:2px solid var(--border); }
+  .total-label { font-weight:600; font-size:15px; }
+  .total-amount { font-family:'DM Mono',monospace; font-size:18px; font-weight:600; color:var(--gold); }
+  .footer { margin-top:60px; text-align:center; }
+  .footer-text { font-size:12px; color:var(--text-muted); letter-spacing:.05em; }
+  .footer-text strong { color:var(--gold); }
 </style>
 </head>
 <body>
 <div class="page">
-
   <header class="header">
     <div class="header-badge">MCA Underwriting Tool</div>
     <h1>Bank Statement<br><em>Analyzer</em></h1>
-    <p class="subtitle">Upload bank statements in any format. AI extracts all financial data and generates a formatted Excel analysis workbook.</p>
-    <div class="formats">
-      <span class="format-chip">PDF</span>
-      <span class="format-chip">CSV</span>
-      <span class="format-chip">TXT</span>
-      <span class="format-chip">Multi-month</span>
-      <span class="format-chip">Multi-file</span>
-    </div>
+    <p class="subtitle">Upload bank statements — AI extracts all financial data and generates a formatted Excel analysis workbook.</p>
   </header>
 
-  <div class="divider"><span class="divider-icon">◆</span></div>
+  <div class="divider"><span>◆</span></div>
 
-  <form id="upload-form">
-
-    <!-- Step 1: Company -->
-    <div class="card" style="margin-bottom:20px">
+  <!-- STEP 1 -->
+  <div id="step1">
+    <div class="card">
       <div class="card-header">
-        <div class="card-title">
-          <span class="step-badge">1</span>
-          Business Information
-        </div>
+        <div class="card-title"><span class="step-badge">1</span> Business Information</div>
       </div>
       <div class="card-body">
-        <label class="field-label" for="company-name">Company Name (optional)</label>
-        <input type="text" id="company-name" name="company_name" placeholder="e.g. Chief Top Remodeling Inc">
+        <label class="field-label" for="company-name">Company Name (optional — AI will detect it)</label>
+        <input type="text" id="company-name" placeholder="e.g. Chief Top Remodeling Inc">
       </div>
     </div>
 
-    <!-- Step 2: Upload -->
-    <div class="card" style="margin-bottom:24px">
+    <div class="card">
       <div class="card-header">
-        <div class="card-title">
-          <span class="step-badge">2</span>
-          Upload Bank Statements
-        </div>
+        <div class="card-title"><span class="step-badge">2</span> Upload Bank Statements</div>
       </div>
       <div class="card-body">
         <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
           <span class="drop-icon">📂</span>
           <div class="drop-title">Drop files here or click to browse</div>
-          <div class="drop-sub">
-            Supports <strong>PDF</strong>, <strong>CSV</strong>, and <strong>TXT</strong> · Up to 32MB · Multiple files accepted
-          </div>
-          <input type="file" id="file-input" name="files" accept=".pdf,.csv,.txt" multiple>
+          <div class="drop-sub">Supports <strong>PDF</strong>, <strong>CSV</strong>, <strong>TXT</strong> · Up to 32MB · Multiple files accepted</div>
+          <input type="file" id="file-input" accept=".pdf,.csv,.txt" multiple>
         </div>
         <div class="file-list" id="file-list"></div>
       </div>
     </div>
 
-    <!-- Analyze button -->
-    <button type="submit" class="btn-analyze" id="analyze-btn" disabled>
-      <span class="btn-icon">⚡</span>
-      Analyze & Generate Excel Report
+    <button class="btn btn-gold" id="analyze-btn" disabled onclick="runAnalysis()">
+      <span>⚡</span> Analyze Statements
     </button>
 
-    <!-- Status -->
     <div class="status-panel" id="status-panel">
       <div id="status-icon"></div>
       <div class="status-text">
@@ -491,54 +126,54 @@
         <p id="status-msg"></p>
       </div>
     </div>
+  </div>
 
-  </form>
+  <!-- STEP 2 -->
+  <div id="step2">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="step-badge">3</span> Enter Outstanding Balances</div>
+      </div>
+      <div class="card-body">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">The AI found these lenders in the statements. Enter the current outstanding balance owed to each one (from your MCA agreements). Leave blank if unknown.</p>
+        <div id="lender-list"></div>
+        <div class="total-row">
+          <span class="total-label">Total Current Positions:</span>
+          <span class="total-amount" id="total-display">$0.00</span>
+        </div>
+      </div>
+    </div>
 
-  <!-- How it works -->
-  <div class="divider" style="margin-top:48px"><span class="divider-icon">◆</span></div>
+    <button class="btn btn-gold" onclick="generateExcel()">
+      <span>📊</span> Generate Excel Report
+    </button>
 
-  <div class="progress-steps">
-    <div class="progress-step">
-      <div class="progress-step-num">01</div>
-      <div class="progress-step-label">Extract Text</div>
+    <div class="status-panel" id="status-panel2">
+      <div id="status-icon2"></div>
+      <div class="status-text">
+        <h3 id="status-title2"></h3>
+        <p id="status-msg2"></p>
+      </div>
     </div>
-    <div class="progress-step">
-      <div class="progress-step-num">02</div>
-      <div class="progress-step-label">AI Analysis</div>
-    </div>
-    <div class="progress-step">
-      <div class="progress-step-num">03</div>
-      <div class="progress-step-label">Parse Data</div>
-    </div>
-    <div class="progress-step">
-      <div class="progress-step-num">04</div>
-      <div class="progress-step-label">Build Excel</div>
-    </div>
-    <div class="progress-step">
-      <div class="progress-step-num">05</div>
-      <div class="progress-step-label">Download</div>
+
+    <div style="margin-top:16px;text-align:center;">
+      <button onclick="startOver()" style="background:none;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;text-decoration:underline;">Start over with new files</button>
     </div>
   </div>
 
   <div class="footer">
     <p class="footer-text">Powered by <strong>Claude AI</strong> · MCA Underwriting Suite</p>
   </div>
-
 </div>
 
 <script>
-  const dropZone = document.getElementById('drop-zone');
-  const fileInput = document.getElementById('file-input');
-  const fileList = document.getElementById('file-list');
-  const analyzeBtn = document.getElementById('analyze-btn');
-  const statusPanel = document.getElementById('status-panel');
-  const form = document.getElementById('upload-form');
   let selectedFiles = [];
+  let parsedData = null;
 
   function formatBytes(b) {
     if (b < 1024) return b + ' B';
-    if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
-    return (b/(1024*1024)).toFixed(1) + ' MB';
+    if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+    return (b/1048576).toFixed(1) + ' MB';
   }
 
   function getIcon(name) {
@@ -549,60 +184,46 @@
   }
 
   function renderFiles() {
-    fileList.innerHTML = '';
+    const list = document.getElementById('file-list');
+    list.innerHTML = '';
     selectedFiles.forEach((f, i) => {
       const div = document.createElement('div');
       div.className = 'file-item';
-      div.innerHTML = `
-        <span class="file-icon">${getIcon(f.name)}</span>
-        <span class="file-name">${f.name}</span>
-        <span class="file-size">${formatBytes(f.size)}</span>
-        <span class="file-remove" onclick="removeFile(${i})">✕</span>
-      `;
-      fileList.appendChild(div);
+      div.innerHTML = '<span>' + getIcon(f.name) + '</span><span class="file-name">' + f.name + '</span><span class="file-size">' + formatBytes(f.size) + '</span><span class="file-remove" onclick="removeFile(' + i + ')">✕</span>';
+      list.appendChild(div);
     });
-    analyzeBtn.disabled = selectedFiles.length === 0;
+    document.getElementById('analyze-btn').disabled = selectedFiles.length === 0;
   }
 
   function addFiles(files) {
+    const allowed = ['pdf','csv','txt'];
     for (const f of files) {
-      const allowed = ['pdf','csv','txt'];
       const ext = f.name.split('.').pop().toLowerCase();
-      if (allowed.includes(ext) && !selectedFiles.find(x => x.name === f.name)) {
-        selectedFiles.push(f);
-      }
+      if (allowed.includes(ext) && !selectedFiles.find(x => x.name === f.name)) selectedFiles.push(f);
     }
     renderFiles();
   }
 
-  function removeFile(i) {
-    selectedFiles.splice(i, 1);
-    renderFiles();
+  function removeFile(i) { selectedFiles.splice(i,1); renderFiles(); }
+
+  document.getElementById('file-input').addEventListener('change', function(){ addFiles(this.files); });
+  const dz = document.getElementById('drop-zone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
+
+  function setStatus(panelId, iconId, titleId, msgId, type, title, msg, iconHtml) {
+    const panel = document.getElementById(panelId);
+    panel.className = 'status-panel ' + type;
+    document.getElementById(iconId).innerHTML = iconHtml;
+    document.getElementById(titleId).textContent = title;
+    document.getElementById(msgId).textContent = msg;
   }
 
-  fileInput.addEventListener('change', () => addFiles(fileInput.files));
-
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    addFiles(e.dataTransfer.files);
-  });
-
-  function setStatus(type, title, msg, iconHtml) {
-    statusPanel.className = 'status-panel ' + type;
-    document.getElementById('status-icon').innerHTML = iconHtml;
-    document.getElementById('status-title').textContent = title;
-    document.getElementById('status-msg').textContent = msg;
-  }
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
+  async function runAnalysis() {
     if (!selectedFiles.length) return;
-
-    analyzeBtn.disabled = true;
-    setStatus('loading', 'Analyzing statements…', 'Extracting text and running AI analysis. This may take 20–60 seconds.', '<div class="spinner"></div>');
+    document.getElementById('analyze-btn').disabled = true;
+    setStatus('status-panel','status-icon','status-title','status-msg','loading','Analyzing statements...','Extracting text and running AI analysis. This may take 30-60 seconds.','<div class="spinner"></div>');
 
     const fd = new FormData();
     selectedFiles.forEach(f => fd.append('files', f));
@@ -610,35 +231,103 @@
     if (name) fd.append('company_name', name);
 
     try {
-      const res = await fetch('/analyze', { method: 'POST', body: fd });
+      const res = await fetch('/parse', { method:'POST', body:fd });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setStatus('status-panel','status-icon','status-title','status-msg','error','Analysis Failed',data.error || 'An error occurred.','<span style="font-size:24px">⚠️</span>');
+        document.getElementById('analyze-btn').disabled = false;
+        return;
+      }
+
+      parsedData = data;
+      showStep2(data);
+
+    } catch(err) {
+      setStatus('status-panel','status-icon','status-title','status-msg','error','Connection Error','Could not reach the server.','<span style="font-size:24px">⚠️</span>');
+      document.getElementById('analyze-btn').disabled = false;
+    }
+  }
+
+  function showStep2(data) {
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = 'block';
+
+    const positions = data.current_positions || [];
+    const list = document.getElementById('lender-list');
+    list.innerHTML = '';
+
+    positions.forEach(pos => {
+      const row = document.createElement('div');
+      row.className = 'lender-row';
+      row.innerHTML = '<div><div class="lender-name">' + pos.lender + '</div><div class="lender-weekly">Weekly payment: $' + (pos.amount || 0).toLocaleString('en-US',{minimumFractionDigits:2}) + '</div></div>' +
+        '<input class="balance-input" type="text" placeholder="$0.00" data-lender="' + pos.lender + '" oninput="updateTotal()">';
+      list.appendChild(row);
+    });
+
+    updateTotal();
+  }
+
+  function updateTotal() {
+    const inputs = document.querySelectorAll('.balance-input');
+    let total = 0;
+    inputs.forEach(inp => {
+      const val = parseFloat(inp.value.replace(/[$,]/g,'')) || 0;
+      total += val;
+    });
+    document.getElementById('total-display').textContent = '$' + total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+
+  async function generateExcel() {
+    const inputs = document.querySelectorAll('.balance-input');
+    const balances = {};
+    inputs.forEach(inp => {
+      const val = parseFloat(inp.value.replace(/[$,]/g,'')) || 0;
+      balances[inp.dataset.lender] = val;
+    });
+
+    const payload = Object.assign({}, parsedData, { balances: balances });
+
+    setStatus('status-panel2','status-icon2','status-title2','status-msg2','loading','Generating Excel...','Building your formatted report.','<div class="spinner"></div>');
+
+    try {
+      const res = await fetch('/generate', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
 
       if (!res.ok) {
         const err = await res.json();
-        setStatus('error', 'Analysis Failed', err.error || 'An unexpected error occurred.', '<span style="font-size:24px">⚠️</span>');
-        analyzeBtn.disabled = false;
+        setStatus('status-panel2','status-icon2','status-title2','status-msg2','error','Failed',err.error || 'Error generating Excel.','<span style="font-size:24px">⚠️</span>');
         return;
       }
 
       const blob = await res.blob();
       const cd = res.headers.get('Content-Disposition') || '';
-      const fnMatch = cd.match(/filename="?([^"]+)"?/);
-      const filename = fnMatch ? fnMatch[1] : 'bank_analysis.xlsx';
-
+      const fn = (cd.match(/filename="?([^"]+)"?/) || [])[1] || 'analysis.xlsx';
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
+      a.href=url; a.download=fn; a.click();
       URL.revokeObjectURL(url);
 
-      setStatus('success', 'Excel Report Downloaded!', `${filename} has been saved to your downloads folder. Open it in Excel to review the full analysis.`, '<span style="font-size:24px">✅</span>');
-      analyzeBtn.disabled = false;
+      setStatus('status-panel2','status-icon2','status-title2','status-msg2','success','Downloaded!','Your Excel report has been saved to your downloads folder.','<span style="font-size:24px">✅</span>');
 
-    } catch (err) {
-      setStatus('error', 'Connection Error', 'Could not reach the server. Make sure the app is running on localhost:5001.', '<span style="font-size:24px">⚠️</span>');
-      analyzeBtn.disabled = false;
+    } catch(err) {
+      setStatus('status-panel2','status-icon2','status-title2','status-msg2','error','Connection Error','Could not reach the server.','<span style="font-size:24px">⚠️</span>');
     }
-  });
+  }
+
+  function startOver() {
+    selectedFiles = [];
+    parsedData = null;
+    document.getElementById('step2').style.display = 'none';
+    document.getElementById('step1').style.display = 'block';
+    document.getElementById('file-list').innerHTML = '';
+    document.getElementById('analyze-btn').disabled = true;
+    document.getElementById('status-panel').className = 'status-panel';
+    document.getElementById('company-name').value = '';
+  }
 </script>
 </body>
 </html>
