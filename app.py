@@ -1,4 +1,4 @@
-import os, json, re, io, anthropic, hashlib, pickle
+import os, json, re, io, anthropic, pickle
 from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
 from werkzeug.utils import secure_filename
 import pdfplumber, openpyxl
@@ -12,11 +12,9 @@ app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', '/tmp/uploads')
 app.config['HISTORY_FOLDER'] = os.environ.get('HISTORY_FOLDER', '/tmp/history')
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'pdf', 'csv', 'txt'}
-
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['HISTORY_FOLDER'], exist_ok=True)
 
-# Login credentials - set via environment variables
 USERS = {
     os.environ.get('USERNAME1', 'dave'): os.environ.get('PASSWORD1', 'mca2026'),
     os.environ.get('USERNAME2', 'admin'): os.environ.get('PASSWORD2', 'analyze2026'),
@@ -57,10 +55,9 @@ def save_history(company_name, data, excel_bytes):
     safe = re.sub(r'[^\w\s-]','',company_name).strip().replace(' ','_')
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     entry_id = "{}_{}".format(safe, ts)
-    history_path = os.path.join(app.config['HISTORY_FOLDER'], entry_id + '.pkl')
-    with open(history_path, 'wb') as f:
-        pickle.dump({'id': entry_id, 'company_name': company_name, 'data': data,
-                     'excel': excel_bytes, 'timestamp': ts}, f)
+    path = os.path.join(app.config['HISTORY_FOLDER'], entry_id + '.pkl')
+    with open(path, 'wb') as f:
+        pickle.dump({'id':entry_id,'company_name':company_name,'data':data,'excel':excel_bytes,'timestamp':ts}, f)
     return entry_id
 
 def load_history():
@@ -70,17 +67,15 @@ def load_history():
         if fname.endswith('.pkl'):
             try:
                 with open(os.path.join(folder, fname), 'rb') as f:
-                    entry = pickle.load(f)
-                    entries.append({'id': entry['id'], 'company_name': entry['company_name'],
-                                   'timestamp': entry['timestamp']})
+                    e = pickle.load(f)
+                    entries.append({'id':e['id'],'company_name':e['company_name'],'timestamp':e['timestamp']})
             except: pass
     return entries
 
 def load_entry(entry_id):
     path = os.path.join(app.config['HISTORY_FOLDER'], entry_id + '.pkl')
     if not os.path.exists(path): return None
-    with open(path, 'rb') as f:
-        return pickle.load(f)
+    with open(path, 'rb') as f: return pickle.load(f)
 
 def parse_with_claude(raw_text, company_name=""):
     client = anthropic.Anthropic()
@@ -96,7 +91,7 @@ def parse_with_claude(raw_text, company_name=""):
         "3. Most recent partial month gets is_mtd = true.\n\n"
         "FOR EACH MONTH:\n"
         "- total_deposits: Deposits and Additions total from CHECKING SUMMARY\n"
-        "- true_deposits: total_deposits minus MCA funding Fedwires (B/O field shows lender names) and minus Online Transfer From Chk entries\n"
+        "- true_deposits: total_deposits minus MCA funding Fedwires and minus Online Transfer From Chk entries\n"
         "- Shileno LLC wires are real client payments - KEEP in true deposits\n"
         "- adb: average of all values in DAILY ENDING BALANCE table\n"
         "- neg_days: count of negative balances in DAILY ENDING BALANCE table\n"
@@ -157,11 +152,11 @@ def build_excel(data):
     ws = wb.active
     ws.title = "Analysis"
 
-    GOLD_PALE="1A1A2E"; LIGHT_YELLOW="16213E"; DARK_GOLD="E2B96F"
-    GREEN_BG="1B4332"; GREEN_FG="95D5B2"; RED_BG="4A1520"; RED_FG="FF6B6B"
-    BLUE="7EB8F7"; PURPLE_BG="2D1B69"; GRAY="1E1E2E"
-    NEG_BG="4A1520"; OK_BG="1B4332"; MONTH_BG="2A1F00"
-    MONTH_FG="E2B96F"; WHITE="E8E8F0"
+    # Original light color scheme
+    GOLD_PALE="FFF8E1"; LIGHT_YELLOW="FFFF99"; DARK_GOLD="8B6914"
+    GREEN_BG="C6EFCE"; GREEN_FG="006100"; RED_BG="FFC7CE"; RED_FG="9C0006"
+    BLUE="0070C0"; PURPLE_BG="EAD5F5"; GRAY="F2F2F2"
+    NEG_BG="FFC7CE"; OK_BG="C6EFCE"; MONTH_BG="FFD966"
 
     thin = Side(style='thin')
     def border_all():
@@ -172,7 +167,7 @@ def build_excel(data):
         c = ws.cell(row=row,column=col,value=value)
         kw={"bold":bold,"size":sz,"italic":italic}
         if ul: kw["underline"]="single"
-        kw["color"] = color if color else WHITE
+        if color: kw["color"]=color
         c.font=Font(**kw)
         if bg: c.fill=PatternFill("solid",start_color=bg)
         c.alignment=Alignment(horizontal=align,vertical="center",wrap_text=wrap)
@@ -183,8 +178,6 @@ def build_excel(data):
 
     for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:14,8:36}.items():
         ws.column_dimensions[get_column_letter(col)].width=wd
-
-    ws.sheet_view.showGridLines = False
 
     row=1
     ws.row_dimensions[row].height=6; row+=1
@@ -198,12 +191,19 @@ def build_excel(data):
     c.fill=PatternFill("solid",start_color=GREEN_BG)
     c.alignment=Alignment(horizontal="center",vertical="center")
     c.border=border_all()
-    w(row,6,"☑" if data.get("offer_decline")=="OFFER" else "☐",sz=14,align="center",bg=GREEN_BG,color=GREEN_FG)
     merge(row,7,row+1,8)
     c=ws.cell(row=row,column=7,value="Update Sheet\nTab Color")
-    c.font=Font(bold=True,size=11,color=DARK_GOLD)
+    c.font=Font(bold=True,size=11)
     c.fill=PatternFill("solid",start_color=PURPLE_BG)
     c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+
+    # APPROVED checkbox - empty bordered cell, user types X to check
+    ac = ws.cell(row=row, column=6)
+    ac.value = ""
+    ac.font = Font(bold=True, size=12, color=GREEN_FG)
+    ac.fill = PatternFill("solid", start_color=GREEN_BG)
+    ac.alignment = Alignment(horizontal="center", vertical="center")
+    ac.border = border_all()
     row+=1
 
     ws.row_dimensions[row].height=22
@@ -212,7 +212,14 @@ def build_excel(data):
     c.fill=PatternFill("solid",start_color=RED_BG)
     c.alignment=Alignment(horizontal="center",vertical="center")
     c.border=border_all()
-    w(row,6,"☑" if data.get("offer_decline")=="DECLINE" else "☐",sz=14,align="center",bg=RED_BG,color=RED_FG)
+
+    # DECLINED checkbox - empty bordered cell, user types X to check
+    dc = ws.cell(row=row, column=6)
+    dc.value = ""
+    dc.font = Font(bold=True, size=12, color=RED_FG)
+    dc.fill = PatternFill("solid", start_color=RED_BG)
+    dc.alignment = Alignment(horizontal="center", vertical="center")
+    dc.border = border_all()
     row+=1
 
     ws.row_dimensions[row].height=6; row+=1
@@ -223,42 +230,42 @@ def build_excel(data):
     merge(row,2,row,6)
     c=ws.cell(row=row,column=2,value=data.get("company_name","COMPANY NAME").upper())
     c.font=Font(bold=True,size=13,color=DARK_GOLD)
-    c.fill=PatternFill("solid",start_color="0D0D1A")
+    c.fill=PatternFill("solid",start_color=LIGHT_YELLOW)
     c.alignment=Alignment(horizontal="left",vertical="center")
     row+=1
 
     ws.row_dimensions[row].height=20
-    w(row,2,"OFFER / DECLINE",bold=True,ul=True,sz=10,color=DARK_GOLD)
+    w(row,2,"OFFER / DECLINE",bold=True,ul=True,sz=10)
     w(row,3,"$0.00",sz=10,color=BLUE)
     w(row,4,"daily",sz=9,italic=True)
     w(row,5,"No. of Bank Accts",bold=True,sz=9)
-    w(row,6,data.get("num_bank_accounts",1),bold=True,sz=11,align="center",color=DARK_GOLD)
+    w(row,6,data.get("num_bank_accounts",1),bold=True,sz=11,align="center")
     row+=1
 
     for note in data.get("account_notes",[])[:4]:
         ws.row_dimensions[row].height=15
-        clr=RED_FG if any(x in note.lower() for x in ["1,000","negative","nsf"]) else WHITE
+        clr="CC0000" if any(x in note.lower() for x in ["1,000","negative","nsf"]) else "000000"
         w(row,2,"*"+note,sz=9,italic=True,color=clr); row+=1
 
     for _ in range(max(0,3-len(data.get("account_notes",[])))):
         ws.row_dimensions[row].height=14; row+=1
 
     ws.row_dimensions[row].height=18
-    w(row,3,"Holdback %",bold=True,sz=10,align="right",color=WHITE)
+    w(row,3,"Holdback %",bold=True,sz=10,align="right")
     hb=data.get("holdback_pct",0)
-    w(row,4,"{:.2f}%".format(hb),sz=10,align="center",color=DARK_GOLD); row+=1
+    w(row,4,"{:.2f}%".format(hb),sz=10,align="center"); row+=1
 
     ws.row_dimensions[row].height=18
-    w(row,2,"SOS",bold=True,ul=True,sz=10,color=DARK_GOLD)
-    w(row,3,"New Holdback %",bold=True,sz=10,align="right",color=WHITE)
-    w(row,4,"{:.2f}%".format(hb),sz=10,align="center",color=DARK_GOLD); row+=1
+    w(row,2,"SOS",bold=True,ul=True,sz=10)
+    w(row,3,"New Holdback %",bold=True,sz=10,align="right")
+    w(row,4,"{:.2f}%".format(hb),sz=10,align="center"); row+=1
 
     ws.row_dimensions[row].height=16
     sos=data.get("sos_info","")
     w(row,2,sos if sos else "Active MM/DD/YYYY",sz=9,italic=True); row+=2
 
     ws.row_dimensions[row].height=18
-    w(row,2,"Court Search",bold=True,ul=True,sz=10,color=DARK_GOLD); row+=1
+    w(row,2,"Court Search",bold=True,ul=True,sz=10); row+=1
     ws.row_dimensions[row].height=16
     court=data.get("court_search_notes","")
     w(row,2,court if court else "*No court records found",sz=9,italic=True,wrap=True); row+=2
@@ -268,12 +275,12 @@ def build_excel(data):
     merge(row,2,row,4)
     c=ws.cell(row=row,column=2,value=acct if acct else "ACCOUNT DETAILS")
     c.font=Font(bold=True,size=12,color=DARK_GOLD)
-    c.fill=PatternFill("solid",start_color="0D0D1A")
+    c.fill=PatternFill("solid",start_color=GOLD_PALE)
     c.alignment=Alignment(horizontal="left",vertical="center")
     row+=2
 
     ws.row_dimensions[row].height=18
-    w(row,2,"Current Positions:",bold=True,ul=True,sz=10,color=DARK_GOLD)
+    w(row,2,"Current Positions:",bold=True,ul=True,sz=10)
     total=data.get("total_current_positions",0)
     w(row,3,"${:,.2f}".format(total) if total else "$0.00",bold=True,sz=10,color=BLUE,ul=True); row+=1
 
@@ -282,13 +289,13 @@ def build_excel(data):
         lender=pos.get("lender",""); amt=pos.get("amount",0)
         freq=pos.get("frequency","weekly"); notes=pos.get("notes","")
         w(row,2,lender,sz=9,color=BLUE)
-        w(row,3,"${:,.2f}".format(amt) if amt else "",sz=9,align="right",color=WHITE)
-        if freq: w(row,4,"*"+freq,sz=9,italic=True,color=WHITE)
-        if notes: w(row,5,"*"+notes,sz=9,italic=True,color=RED_FG)
+        w(row,3,"${:,.2f}".format(amt) if amt else "",sz=9,align="right")
+        if freq: w(row,4,"*"+freq,sz=9,italic=True)
+        if notes: w(row,5,"*"+notes,sz=9,italic=True,color="CC0000")
         row+=1
 
     ws.row_dimensions[row].height=16
-    w(row,2,"Other Loans / Positions:",bold=True,sz=10,color=DARK_GOLD); row+=2
+    w(row,2,"Other Loans / Positions:",bold=True,sz=10); row+=2
 
     for m in data.get("months",[]):
         label=m.get("month_label",""); period=m.get("period",""); is_mtd=m.get("is_mtd",False)
@@ -297,7 +304,7 @@ def build_excel(data):
         merge(row,2,row,7)
         hdr="{} (MTD) From {}".format(label,period) if is_mtd and period else label
         c=ws.cell(row=row,column=2,value=hdr)
-        c.font=Font(bold=True,size=11,color=MONTH_FG)
+        c.font=Font(bold=True,size=11)
         c.fill=PatternFill("solid",start_color=MONTH_BG)
         c.alignment=Alignment(horizontal="left",vertical="center")
         row+=1
@@ -306,7 +313,7 @@ def build_excel(data):
         td=m.get("total_deposits",0)
         w(row,2,"Total deposits:",sz=10)
         w(row,3,"${:,.2f}".format(td),sz=10,color=BLUE)
-        if is_mtd: w(row,4,"*calculated *",sz=9,italic=True,color="888899")
+        if is_mtd: w(row,4,"*calculated *",sz=9,italic=True,color="808080")
         row+=1
 
         ws.row_dimensions[row].height=16
@@ -317,7 +324,7 @@ def build_excel(data):
         ntx=m.get("num_transactions",0)
         if is_mtd and ntx: w(row,4,str(ntx),sz=10,align="center",color=BLUE)
         tnote=m.get("true_deposit_notes","")
-        if tnote: w(row,5,"*incl. "+tnote,sz=8,italic=True,color="888899",wrap=True)
+        if tnote: w(row,5,"*incl. "+tnote,sz=8,italic=True,color="808080",wrap=True)
         row+=1
 
         neg=m.get("neg_days",0); nsf=m.get("nsf_count",0); od=m.get("od_count",0)
@@ -334,7 +341,7 @@ def build_excel(data):
         adb=m.get("adb",0)
         w(row,2,"ADB (average daily balance)",sz=10)
         w(row,3,"${:,.2f}".format(adb),sz=10,color=BLUE)
-        w(row,4,"*calculated",sz=9,italic=True,color="888899"); row+=1
+        w(row,4,"*calculated",sz=9,italic=True,color="808080"); row+=1
 
         dl=m.get("days_below_1000",0)
         w(row,2,"Days below $1,000:",sz=10)
@@ -343,14 +350,14 @@ def build_excel(data):
         for fe in m.get("funding_events",[]):
             w(row,2,"*Funded by "+fe.get("funder",""),sz=9,italic=True,color=BLUE)
             amt_fe=fe.get("amount",0)
-            w(row,3,"with an amount of ${:,.2f}".format(amt_fe) if amt_fe else "",sz=9,italic=True,color=WHITE)
+            w(row,3,"with an amount of ${:,.2f}".format(amt_fe) if amt_fe else "",sz=9,italic=True)
             dt=fe.get("date","")
-            if dt: w(row,4,"on "+dt,sz=9,italic=True,color=WHITE)
+            if dt: w(row,4,"on "+dt,sz=9,italic=True)
             row+=1
 
         mnotes=m.get("notes","")
         if mnotes:
-            w(row,2,"*"+mnotes,sz=9,italic=True,color="888899",wrap=True); row+=1
+            w(row,2,"*"+mnotes,sz=9,italic=True,color="808080",wrap=True); row+=1
 
         row+=2
 
@@ -390,7 +397,6 @@ def analyze():
     files=request.files.getlist('files')
     company_name=request.form.get('company_name','')
     entry_id=request.form.get('entry_id','')
-
     if not files or all(f.filename=='' for f in files): return jsonify({"error":"No files selected"}),400
 
     combined_text=""
@@ -412,7 +418,6 @@ def analyze():
     try: new_data=parse_with_claude(combined_text,company_name)
     except Exception as e: return jsonify({"error":"AI parsing failed: {}".format(str(e))}),500
 
-    # If adding to existing entry, merge the data
     if entry_id:
         existing = load_entry(entry_id)
         if existing:
@@ -420,14 +425,12 @@ def analyze():
 
     try:
         excel=build_excel(new_data)
-        excel_bytes = excel.read()
+        excel_bytes=excel.read()
     except Exception as e:
         return jsonify({"error":"Excel generation failed: {}".format(str(e))}),500
 
-    # Save to history
-    cn = new_data.get("company_name","Unknown")
+    cn=new_data.get("company_name","Unknown")
     save_history(cn, new_data, excel_bytes)
-
     safe=re.sub(r'[^\w\s-]','',cn).strip().replace(' ','_')
     return send_file(io.BytesIO(excel_bytes),as_attachment=True,
                      download_name=safe+"_analysis.xlsx",
