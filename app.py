@@ -46,12 +46,16 @@ def parse_with_claude(raw_text, company_name=""):
         "- neg_days: count of negative balances in DAILY ENDING BALANCE table\n"
         "- days_below_1000: count of balances under 1000 in DAILY ENDING BALANCE table\n"
         "- funding_events: incoming Fedwire credits that are MCA loans\n\n"
-        "FOR CURRENT POSITIONS: find all recurring ACH debits in Electronic Withdrawals. Use most recent amount per lender. Do NOT calculate total_current_positions - leave it as 0.\n\n"
+        "FOR CURRENT POSITIONS:\n"
+        "- Find all recurring ACH debits in Electronic Withdrawals - these are weekly MCA repayments. Use most recent amount per lender as the weekly payment amount.\n"
+        "- For each lender in current_positions, also find their FUNDING WIRE (incoming Fedwire credit where B/O field contains the lender name). The funding wire amount is their position amount (outstanding_balance).\n"
+        "- total_current_positions = sum of ALL MCA funding wires found across all months. This is what was advanced to the borrower.\n\n"
+        "IMPORTANT: current_positions amount field = the weekly ACH repayment. outstanding_balance field = the original funding wire amount for that lender.\n\n"
         "Return this JSON structure:\n"
         '{"company_name":"string","account_number_last4":"string","num_bank_accounts":1,'
         '"offer_decline":"DECLINE","holdback_pct":0.0,"sos_info":"","court_search_notes":"",'
         '"account_notes":[],"total_current_positions":0.0,'
-        '"current_positions":[{"lender":"name","amount":0.0,"frequency":"weekly","notes":""}],'
+        '"current_positions":[{"lender":"name","amount":0.0,"outstanding_balance":0.0,"frequency":"weekly","notes":""}],'
         '"months":[{"month_label":"Mon-YY","period":"MM/DD to MM/DD","is_mtd":false,'
         '"total_deposits":0.0,"true_deposits":0.0,"true_deposit_notes":"",'
         '"neg_days":0,"nsf_count":0,"od_count":0,"num_transactions":0,'
@@ -323,12 +327,31 @@ def generate():
 
         positions = data.get("current_positions",[])
         balances = data.get("balances",{})
+
         total = 0
         for pos in positions:
             lender = pos.get("lender","")
-            bal = float(balances.get(lender, 0) or 0)
-            pos["outstanding_balance"] = bal
-            total += bal
+            amt = float(pos.get("amount", 0) or 0)
+            freq = pos.get("frequency","weekly").lower()
+
+            # Use manually entered balance if provided
+            manual = float(balances.get(lender, 0) or 0)
+            if manual > 0:
+                monthly = manual
+            else:
+                # Calculate monthly equivalent from payment frequency
+                if "daily" in freq:
+                    monthly = amt * 22
+                elif "bi-weekly" in freq or "biweekly" in freq or "bi weekly" in freq:
+                    monthly = amt * 2
+                elif "monthly" in freq:
+                    monthly = amt * 1
+                else:
+                    # Default: weekly x 4
+                    monthly = amt * 4
+
+            pos["outstanding_balance"] = monthly
+            total += monthly
         data["total_current_positions"] = total
 
         excel = build_excel(data)
