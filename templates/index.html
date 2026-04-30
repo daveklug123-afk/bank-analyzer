@@ -3,184 +3,224 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bank Statement Analyzer</title>
+<title>MCA Analyzer</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --gold: #C8962A; --gold-pale: #FDF6E3; --dark: #1A1410;
-    --text: #3D2E1A; --text-muted: #8C7355;
-    --border: #D4B87A; --border-light: #EDD99A;
-    --green: #2E7D32; --green-bg: #E8F5E9;
-    --red: #C62828; --red-bg: #FFEBEE;
-    --surface: #FFFDF5; --surface-2: #FBF5E0;
+    --bg:#0A0A12; --surface:#0F0F1E; --surface2:#141428;
+    --border:#2A2A3E; --border2:#3A3A55;
+    --gold:#C8962A; --gold2:#E2B96F; --gold-dim:#3A2A10;
+    --text:#E8E8F0; --text2:#AAAACC; --text3:#666688;
+    --blue:#7EB8F7; --green:#95D5B2; --green-bg:#1B4332;
+    --red:#FF6B6B; --red-bg:#2A0810;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family:'DM Sans',sans-serif; background:var(--surface); color:var(--text); min-height:100vh; }
-  .page { max-width:780px; margin:0 auto; padding:48px 24px 80px; }
-  .header { text-align:center; margin-bottom:48px; }
-  .header-badge { display:inline-block; font-family:'DM Mono',monospace; font-size:10px; font-weight:500; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); border:1px solid var(--border); padding:6px 16px; border-radius:2px; background:var(--gold-pale); margin-bottom:20px; }
-  h1 { font-family:'DM Serif Display',serif; font-size:clamp(32px,6vw,52px); color:var(--dark); line-height:1.1; margin-bottom:12px; letter-spacing:-.02em; }
+  body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+  body::before { content:''; position:fixed; inset:0; background:radial-gradient(ellipse 100% 40% at 50% 0%, rgba(200,150,42,0.06) 0%, transparent 50%); pointer-events:none; }
+  .topbar { position:sticky; top:0; z-index:100; background:rgba(10,10,18,0.9); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); padding:0 32px; display:flex; align-items:center; justify-content:space-between; height:56px; }
+  .topbar-brand { font-family:'DM Mono',monospace; font-size:12px; letter-spacing:.15em; text-transform:uppercase; color:var(--gold); }
+  .topbar-right { display:flex; align-items:center; gap:16px; }
+  .topbar-user { font-size:13px; color:var(--text3); }
+  .logout-btn { font-size:12px; color:var(--text3); text-decoration:none; padding:6px 12px; border:1px solid var(--border); border-radius:3px; transition:all .2s; }
+  .logout-btn:hover { border-color:var(--border2); color:var(--text); }
+  .page { max-width:820px; margin:0 auto; padding:48px 24px 80px; position:relative; }
+  .header { margin-bottom:40px; }
+  .header-badge { display:inline-block; font-family:'DM Mono',monospace; font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); border:1px solid var(--gold-dim); padding:5px 14px; border-radius:2px; background:rgba(200,150,42,0.06); margin-bottom:16px; }
+  h1 { font-family:'DM Serif Display',serif; font-size:clamp(28px,5vw,44px); color:var(--gold2); line-height:1.1; margin-bottom:10px; }
   h1 em { font-style:italic; color:var(--gold); }
-  .subtitle { font-size:15px; color:var(--text-muted); line-height:1.6; max-width:480px; margin:0 auto; }
-  .divider { display:flex; align-items:center; gap:16px; margin:40px 0; color:var(--border); }
-  .divider::before,.divider::after { content:''; flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); }
-  .card { background:#FFFEFB; border:1px solid var(--border-light); border-radius:4px; box-shadow:0 2px 20px rgba(200,150,42,.08); overflow:hidden; margin-bottom:20px; }
-  .card-header { padding:20px 28px 18px; border-bottom:1px solid var(--border-light); background:var(--gold-pale); }
-  .card-title { font-family:'DM Serif Display',serif; font-size:18px; color:var(--dark); display:flex; align-items:center; gap:10px; }
-  .step-badge { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; background:var(--gold); color:white; border-radius:50%; font-family:'DM Mono',monospace; font-size:11px; font-weight:500; flex-shrink:0; }
-  .card-body { padding:28px; }
-  .field-label { display:block; font-size:12px; font-weight:500; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); margin-bottom:8px; }
-  input[type=text] { width:100%; padding:12px 16px; border:1px solid var(--border); border-radius:3px; font-family:'DM Sans',sans-serif; font-size:15px; color:var(--text); background:var(--surface); outline:none; transition:border-color .2s,box-shadow .2s; }
-  input[type=text]:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,150,42,.12); }
-  input[type=text]::placeholder { color:var(--text-muted); opacity:.6; }
-  .drop-zone { border:2px dashed var(--border); border-radius:4px; padding:40px 24px; text-align:center; cursor:pointer; transition:all .25s ease; background:var(--surface-2); }
-  .drop-zone:hover,.drop-zone.drag-over { border-color:var(--gold); background:var(--gold-pale); transform:translateY(-1px); box-shadow:0 4px 16px rgba(200,150,42,.12); }
-  .drop-icon { font-size:36px; margin-bottom:12px; display:block; }
-  .drop-title { font-family:'DM Serif Display',serif; font-size:18px; color:var(--dark); margin-bottom:6px; }
-  .drop-sub { font-size:13px; color:var(--text-muted); }
-  .drop-sub strong { color:var(--gold); font-weight:600; }
+  .subtitle { font-size:14px; color:var(--text3); line-height:1.6; }
+  .divider { height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); margin:32px 0; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:16px; }
+  .card-header { padding:16px 24px; border-bottom:1px solid var(--border); background:var(--surface2); display:flex; align-items:center; gap:10px; }
+  .card-title { font-family:'DM Serif Display',serif; font-size:17px; color:var(--gold2); }
+  .step-badge { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:var(--gold); color:var(--bg); border-radius:50%; font-family:'DM Mono',monospace; font-size:10px; font-weight:700; flex-shrink:0; }
+  .card-body { padding:24px; }
+  .field-label { display:block; font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--text3); margin-bottom:8px; }
+  input[type=text] { width:100%; padding:12px 16px; background:#0D0D1A; border:1px solid var(--border); border-radius:4px; font-family:'DM Sans',sans-serif; font-size:15px; color:var(--text); outline:none; transition:border-color .2s; }
+  input[type=text]:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,150,42,0.1); }
+  input[type=text]::placeholder { color:var(--text3); }
+  .drop-zone { border:2px dashed var(--border); border-radius:4px; padding:36px 24px; text-align:center; cursor:pointer; transition:all .25s; background:rgba(255,255,255,0.01); }
+  .drop-zone:hover,.drop-zone.drag-over { border-color:var(--gold); background:rgba(200,150,42,0.04); transform:translateY(-1px); }
+  .drop-icon { font-size:32px; margin-bottom:10px; display:block; }
+  .drop-title { font-family:'DM Serif Display',serif; font-size:17px; color:var(--text); margin-bottom:4px; }
+  .drop-sub { font-size:13px; color:var(--text3); }
+  .drop-sub strong { color:var(--gold); }
   #file-input { display:none; }
-  .file-list { margin-top:16px; display:flex; flex-direction:column; gap:8px; }
-  .file-item { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--surface); border:1px solid var(--border-light); border-radius:3px; font-size:13px; }
-  .file-name { flex:1; font-weight:500; color:var(--dark); }
-  .file-size { color:var(--text-muted); font-family:'DM Mono',monospace; font-size:11px; }
-  .file-remove { cursor:pointer; color:var(--text-muted); font-size:18px; padding:2px 6px; border-radius:2px; }
+  .file-list { margin-top:14px; display:flex; flex-direction:column; gap:6px; }
+  .file-item { display:flex; align-items:center; gap:10px; padding:9px 14px; background:#0D0D1A; border:1px solid var(--border); border-radius:3px; font-size:13px; }
+  .file-name { flex:1; font-weight:500; color:var(--text); }
+  .file-size { color:var(--text3); font-family:'DM Mono',monospace; font-size:11px; }
+  .file-remove { cursor:pointer; color:var(--text3); font-size:16px; padding:2px 6px; border-radius:2px; transition:color .15s; }
   .file-remove:hover { color:var(--red); }
-  .btn { width:100%; padding:16px 24px; border:none; border-radius:3px; font-family:'DM Sans',sans-serif; font-size:15px; font-weight:600; letter-spacing:.04em; cursor:pointer; transition:all .2s ease; display:flex; align-items:center; justify-content:center; gap:10px; }
-  .btn-gold { background:linear-gradient(135deg,#C8962A 0%,#A07020 100%); color:white; box-shadow:0 2px 8px rgba(200,150,42,.3); }
-  .btn-gold:hover:not(:disabled) { background:linear-gradient(135deg,#D4A030 0%,#B08030 100%); transform:translateY(-1px); box-shadow:0 4px 16px rgba(200,150,42,.4); }
-  .btn:disabled { opacity:.5; cursor:not-allowed; transform:none; }
-  .status-panel { display:none; margin-top:20px; padding:20px 24px; border-radius:4px; border:1px solid; }
-  .status-panel.loading { display:flex; align-items:flex-start; gap:16px; background:#FFF8E1; border-color:#FFD54F; }
-  .status-panel.success { display:flex; align-items:flex-start; gap:16px; background:var(--green-bg); border-color:#81C784; }
-  .status-panel.error { display:flex; align-items:flex-start; gap:16px; background:var(--red-bg); border-color:#EF9A9A; }
-  .status-text h3 { font-family:'DM Serif Display',serif; font-size:16px; margin-bottom:4px; }
-  .status-panel.loading h3 { color:#795548; }
+  .btn { width:100%; padding:15px 24px; border:none; border-radius:4px; font-family:'DM Sans',sans-serif; font-size:15px; font-weight:600; letter-spacing:.04em; cursor:pointer; transition:all .2s; display:flex; align-items:center; justify-content:center; gap:10px; background:linear-gradient(135deg,#C8962A,#8B6010); color:#0A0A12; box-shadow:0 2px 12px rgba(200,150,42,0.25); }
+  .btn:hover:not(:disabled) { background:linear-gradient(135deg,#D4A030,#9B7020); transform:translateY(-1px); box-shadow:0 4px 20px rgba(200,150,42,0.35); }
+  .btn:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+  .status-panel { display:none; margin-top:16px; padding:18px 22px; border-radius:4px; border:1px solid; }
+  .status-panel.loading { display:flex; align-items:flex-start; gap:14px; background:rgba(200,150,42,0.06); border-color:var(--gold-dim); }
+  .status-panel.success { display:flex; align-items:flex-start; gap:14px; background:rgba(27,67,50,0.4); border-color:#2D6A4F; }
+  .status-panel.error { display:flex; align-items:flex-start; gap:14px; background:var(--red-bg); border-color:#4A1520; }
+  .status-text h3 { font-family:'DM Serif Display',serif; font-size:15px; margin-bottom:3px; }
+  .status-panel.loading h3 { color:var(--gold2); }
   .status-panel.success h3 { color:var(--green); }
   .status-panel.error h3 { color:var(--red); }
-  .status-text p { font-size:13px; line-height:1.5; color:var(--text-muted); }
-  .spinner { width:24px; height:24px; border:2px solid rgba(200,150,42,.2); border-top-color:var(--gold); border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; }
+  .status-text p { font-size:13px; color:var(--text3); line-height:1.5; }
+  .spinner { width:22px; height:22px; border:2px solid rgba(200,150,42,0.15); border-top-color:var(--gold); border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; margin-top:2px; }
   @keyframes spin { to { transform:rotate(360deg); } }
 
-  /* Step 2 - Balances */
-  #step2 { display:none; }
-  .lender-row { display:grid; grid-template-columns:1fr 180px; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border-light); }
-  .lender-row:last-child { border-bottom:none; }
-  .lender-name { font-size:14px; font-weight:500; color:var(--dark); }
-  .lender-weekly { font-size:12px; color:var(--text-muted); margin-top:2px; }
-  .balance-input { padding:10px 12px; border:1px solid var(--border); border-radius:3px; font-family:'DM Mono',monospace; font-size:13px; color:var(--text); width:100%; outline:none; }
-  .balance-input:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,150,42,.12); }
-  .total-row { display:flex; justify-content:space-between; align-items:center; padding:14px 0 0; margin-top:8px; border-top:2px solid var(--border); }
-  .total-label { font-weight:600; font-size:15px; }
-  .total-amount { font-family:'DM Mono',monospace; font-size:18px; font-weight:600; color:var(--gold); }
-  .footer { margin-top:60px; text-align:center; }
-  .footer-text { font-size:12px; color:var(--text-muted); letter-spacing:.05em; }
-  .footer-text strong { color:var(--gold); }
+  /* History section */
+  .history-section { margin-top:40px; }
+  .section-title { font-family:'DM Serif Display',serif; font-size:20px; color:var(--gold2); margin-bottom:16px; display:flex; align-items:center; gap:10px; }
+  .history-empty { text-align:center; padding:32px; color:var(--text3); font-size:14px; border:1px dashed var(--border); border-radius:6px; }
+  .history-item { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px 20px; margin-bottom:10px; display:flex; align-items:center; gap:16px; transition:border-color .2s; }
+  .history-item:hover { border-color:var(--border2); }
+  .history-icon { font-size:24px; flex-shrink:0; }
+  .history-info { flex:1; }
+  .history-name { font-weight:600; font-size:15px; color:var(--text); margin-bottom:3px; }
+  .history-time { font-size:12px; color:var(--text3); font-family:'DM Mono',monospace; }
+  .history-actions { display:flex; gap:8px; flex-shrink:0; }
+  .btn-sm { padding:7px 14px; border:none; border-radius:3px; font-family:'DM Sans',sans-serif; font-size:12px; font-weight:600; cursor:pointer; transition:all .2s; text-decoration:none; display:inline-flex; align-items:center; gap:5px; }
+  .btn-download { background:rgba(200,150,42,0.12); color:var(--gold2); border:1px solid var(--gold-dim); }
+  .btn-download:hover { background:rgba(200,150,42,0.2); }
+  .btn-add { background:rgba(126,184,247,0.1); color:var(--blue); border:1px solid rgba(126,184,247,0.2); }
+  .btn-add:hover { background:rgba(126,184,247,0.2); }
+  .btn-delete { background:rgba(255,107,107,0.08); color:var(--red); border:1px solid rgba(255,107,107,0.15); }
+  .btn-delete:hover { background:rgba(255,107,107,0.15); }
+
+  /* Add to existing modal */
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:200; align-items:center; justify-content:center; }
+  .modal-overlay.active { display:flex; }
+  .modal { background:var(--surface); border:1px solid var(--border2); border-radius:8px; padding:32px; max-width:480px; width:90%; }
+  .modal h2 { font-family:'DM Serif Display',serif; font-size:22px; color:var(--gold2); margin-bottom:8px; }
+  .modal p { font-size:14px; color:var(--text3); margin-bottom:24px; }
+  .modal-company { font-weight:600; color:var(--text); }
+  .modal-dropzone { border:2px dashed var(--border); border-radius:4px; padding:28px; text-align:center; cursor:pointer; margin-bottom:16px; background:rgba(255,255,255,0.01); }
+  .modal-dropzone:hover { border-color:var(--gold); }
+  .modal-file-list { margin-bottom:16px; display:flex; flex-direction:column; gap:6px; }
+  .modal-actions { display:flex; gap:10px; }
+  .btn-cancel { flex:1; padding:12px; background:transparent; border:1px solid var(--border); border-radius:4px; color:var(--text3); font-family:'DM Sans',sans-serif; font-size:14px; cursor:pointer; transition:all .2s; }
+  .btn-cancel:hover { border-color:var(--border2); color:var(--text); }
+  .btn-submit { flex:2; padding:12px; background:linear-gradient(135deg,#C8962A,#8B6010); border:none; border-radius:4px; color:#0A0A12; font-family:'DM Sans',sans-serif; font-size:14px; font-weight:700; cursor:pointer; transition:all .2s; }
+  .btn-submit:hover:not(:disabled) { background:linear-gradient(135deg,#D4A030,#9B7020); }
+  .btn-submit:disabled { opacity:.4; cursor:not-allowed; }
 </style>
 </head>
 <body>
+
+<div class="topbar">
+  <div class="topbar-brand">◆ MCA Underwriting Suite</div>
+  <div class="topbar-right">
+    <span class="topbar-user">Signed in</span>
+    <a href="/logout" class="logout-btn">Sign out</a>
+  </div>
+</div>
+
 <div class="page">
-  <header class="header">
-    <div class="header-badge">MCA Underwriting Tool</div>
-    <h1>Bank Statement<br><em>Analyzer</em></h1>
-    <p class="subtitle">Upload bank statements — AI extracts all financial data and generates a formatted Excel analysis workbook.</p>
-  </header>
+  <div class="header">
+    <div class="header-badge">Bank Statement Analyzer</div>
+    <h1>Analyze &amp; Generate<br><em>Excel Reports</em></h1>
+    <p class="subtitle">Upload bank statements in PDF, CSV, or TXT format. AI extracts all financial data and builds a formatted workbook.</p>
+  </div>
 
-  <div class="divider"><span>◆</span></div>
+  <div class="divider"></div>
 
-  <!-- STEP 1 -->
-  <div id="step1">
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="step-badge">1</span> Business Information</div>
-      </div>
-      <div class="card-body">
-        <label class="field-label" for="company-name">Company Name (optional — AI will detect it)</label>
-        <input type="text" id="company-name" placeholder="e.g. Chief Top Remodeling Inc">
-      </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="step-badge">1</span>
+      <span class="card-title">Business Information</span>
     </div>
-
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="step-badge">2</span> Upload Bank Statements</div>
-      </div>
-      <div class="card-body">
-        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
-          <span class="drop-icon">📂</span>
-          <div class="drop-title">Drop files here or click to browse</div>
-          <div class="drop-sub">Supports <strong>PDF</strong>, <strong>CSV</strong>, <strong>TXT</strong> · Up to 32MB · Multiple files accepted</div>
-          <input type="file" id="file-input" accept=".pdf,.csv,.txt" multiple>
-        </div>
-        <div class="file-list" id="file-list"></div>
-      </div>
-    </div>
-
-    <button class="btn btn-gold" id="analyze-btn" disabled onclick="runAnalysis()">
-      <span>⚡</span> Analyze Statements
-    </button>
-
-    <div class="status-panel" id="status-panel">
-      <div id="status-icon"></div>
-      <div class="status-text">
-        <h3 id="status-title"></h3>
-        <p id="status-msg"></p>
-      </div>
+    <div class="card-body">
+      <label class="field-label">Company Name (optional)</label>
+      <input type="text" id="company-name" placeholder="e.g. Chief Top Remodeling Inc">
     </div>
   </div>
 
-  <!-- STEP 2 -->
-  <div id="step2">
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="step-badge">3</span> Enter Outstanding Balances</div>
-      </div>
-      <div class="card-body">
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">The AI calculated each lender's monthly payment burden based on their frequency. Review and adjust any amounts if needed before generating the report.</p>
-        <div id="lender-list"></div>
-        <div class="total-row">
-          <span class="total-label">Total Current Positions:</span>
-          <span class="total-amount" id="total-display">$0.00</span>
-        </div>
-      </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="step-badge">2</span>
+      <span class="card-title">Upload Bank Statements</span>
     </div>
-
-    <button class="btn btn-gold" onclick="generateExcel()">
-      <span>📊</span> Generate Excel Report
-    </button>
-
-    <div class="status-panel" id="status-panel2">
-      <div id="status-icon2"></div>
-      <div class="status-text">
-        <h3 id="status-title2"></h3>
-        <p id="status-msg2"></p>
+    <div class="card-body">
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <span class="drop-icon">📂</span>
+        <div class="drop-title">Drop files here or click to browse</div>
+        <div class="drop-sub">Supports <strong>PDF</strong>, <strong>CSV</strong>, <strong>TXT</strong> · Up to 32MB · Multiple files accepted</div>
+        <input type="file" id="file-input" accept=".pdf,.csv,.txt" multiple>
       </div>
-    </div>
-
-    <div style="margin-top:16px;text-align:center;">
-      <button onclick="startOver()" style="background:none;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;text-decoration:underline;">Start over with new files</button>
+      <div class="file-list" id="file-list"></div>
     </div>
   </div>
 
-  <div class="footer">
-    <p class="footer-text">Powered by <strong>Claude AI</strong> · MCA Underwriting Suite</p>
+  <button class="btn" id="analyze-btn" disabled onclick="runAnalysis()">
+    <span>⚡</span> Analyze and Generate Excel Report
+  </button>
+
+  <div class="status-panel" id="status-panel">
+    <div id="status-icon"></div>
+    <div class="status-text">
+      <h3 id="status-title"></h3>
+      <p id="status-msg"></p>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="history-section">
+    <div class="divider"></div>
+    <div class="section-title">📁 Recent Analyses</div>
+
+    {% if history %}
+      {% for entry in history %}
+      <div class="history-item">
+        <div class="history-icon">📊</div>
+        <div class="history-info">
+          <div class="history-name">{{ entry.company_name }}</div>
+          <div class="history-time">{{ entry.timestamp[:4] }}-{{ entry.timestamp[4:6] }}-{{ entry.timestamp[6:8] }} at {{ entry.timestamp[9:11] }}:{{ entry.timestamp[11:13] }}</div>
+        </div>
+        <div class="history-actions">
+          <a href="/history/{{ entry.id }}/download" class="btn-sm btn-download">⬇ Download</a>
+          <button class="btn-sm btn-add" onclick="openAddModal('{{ entry.id }}', '{{ entry.company_name }}')">＋ Add Statements</button>
+          <form method="POST" action="/history/{{ entry.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this analysis?')">
+            <button type="submit" class="btn-sm btn-delete">✕</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="history-empty">No analyses yet. Upload your first bank statements above.</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Add Statements Modal -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <h2>Add Statements</h2>
+    <p>Adding new months to: <span class="modal-company" id="modal-company-name"></span></p>
+    <div class="modal-dropzone" onclick="document.getElementById('modal-file-input').click()">
+      <span style="font-size:24px">📂</span>
+      <div style="margin-top:8px;font-size:14px;color:var(--text3)">Click to select additional statement files</div>
+      <input type="file" id="modal-file-input" accept=".pdf,.csv,.txt" multiple style="display:none">
+    </div>
+    <div class="modal-file-list" id="modal-file-list"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-submit" id="modal-submit" disabled onclick="submitAdditional()">Analyze and Update</button>
+    </div>
+    <div class="status-panel" id="modal-status" style="margin-top:14px">
+      <div id="modal-status-icon"></div>
+      <div class="status-text"><h3 id="modal-status-title"></h3><p id="modal-status-msg"></p></div>
+    </div>
   </div>
 </div>
 
 <script>
   let selectedFiles = [];
-  let parsedData = null;
+  let modalFiles = [];
+  let currentEntryId = '';
 
   function formatBytes(b) {
     if (b < 1024) return b + ' B';
     if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
     return (b/1048576).toFixed(1) + ' MB';
-  }
-
-  function getIcon(name) {
-    const ext = name.split('.').pop().toLowerCase();
-    if (ext === 'pdf') return '📄';
-    if (ext === 'csv') return '📊';
-    return '📋';
   }
 
   function renderFiles() {
@@ -189,7 +229,7 @@
     selectedFiles.forEach((f, i) => {
       const div = document.createElement('div');
       div.className = 'file-item';
-      div.innerHTML = '<span>' + getIcon(f.name) + '</span><span class="file-name">' + f.name + '</span><span class="file-size">' + formatBytes(f.size) + '</span><span class="file-remove" onclick="removeFile(' + i + ')">✕</span>';
+      div.innerHTML = '<span>📄</span><span class="file-name">' + f.name + '</span><span class="file-size">' + formatBytes(f.size) + '</span><span class="file-remove" onclick="removeFile(' + i + ')">x</span>';
       list.appendChild(div);
     });
     document.getElementById('analyze-btn').disabled = selectedFiles.length === 0;
@@ -212,105 +252,33 @@
   dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
   dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); addFiles(e.dataTransfer.files); });
 
-  function setStatus(panelId, iconId, titleId, msgId, type, title, msg, iconHtml) {
-    const panel = document.getElementById(panelId);
+  function setStatus(type, title, msg, iconHtml) {
+    const panel = document.getElementById('status-panel');
     panel.className = 'status-panel ' + type;
-    document.getElementById(iconId).innerHTML = iconHtml;
-    document.getElementById(titleId).textContent = title;
-    document.getElementById(msgId).textContent = msg;
+    document.getElementById('status-icon').innerHTML = iconHtml;
+    document.getElementById('status-title').textContent = title;
+    document.getElementById('status-msg').textContent = msg;
   }
 
-  async function runAnalysis() {
-    if (!selectedFiles.length) return;
+  async function runAnalysis(entryId) {
+    const files = selectedFiles;
+    if (!files.length) return;
     document.getElementById('analyze-btn').disabled = true;
-    setStatus('status-panel','status-icon','status-title','status-msg','loading','Analyzing statements...','Extracting text and running AI analysis. This may take 30-60 seconds.','<div class="spinner"></div>');
+    setStatus('loading','Analyzing statements...','Extracting text and running AI analysis. This may take 30-60 seconds.','<div class="spinner"></div>');
 
     const fd = new FormData();
-    selectedFiles.forEach(f => fd.append('files', f));
+    files.forEach(f => fd.append('files', f));
     const name = document.getElementById('company-name').value.trim();
     if (name) fd.append('company_name', name);
 
     try {
-      const res = await fetch('/parse', { method:'POST', body:fd });
-      const data = await res.json();
-
+      const res = await fetch('/analyze', { method:'POST', body:fd });
       if (!res.ok) {
-        setStatus('status-panel','status-icon','status-title','status-msg','error','Analysis Failed',data.error || 'An error occurred.','<span style="font-size:24px">⚠️</span>');
+        const err = await res.json();
+        setStatus('error','Analysis Failed',err.error || 'An error occurred.','<span style="font-size:22px">!</span>');
         document.getElementById('analyze-btn').disabled = false;
         return;
       }
-
-      parsedData = data;
-      showStep2(data);
-
-    } catch(err) {
-      setStatus('status-panel','status-icon','status-title','status-msg','error','Connection Error','Could not reach the server.','<span style="font-size:24px">⚠️</span>');
-      document.getElementById('analyze-btn').disabled = false;
-    }
-  }
-
-  function showStep2(data) {
-    document.getElementById('step1').style.display = 'none';
-    document.getElementById('step2').style.display = 'block';
-
-    const positions = data.current_positions || [];
-    const list = document.getElementById('lender-list');
-    list.innerHTML = '';
-
-    positions.forEach(pos => {
-      const row = document.createElement('div');
-      row.className = 'lender-row';
-      const amt = pos.amount || 0;
-      const freq = (pos.frequency || 'weekly').toLowerCase();
-      let multiplier = 4;
-      if (freq.includes('daily')) multiplier = 22;
-      else if (freq.includes('bi')) multiplier = 2;
-      else if (freq.includes('monthly')) multiplier = 1;
-      const monthly = amt * multiplier;
-      const monthlyStr = monthly > 0 ? monthly.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
-      row.innerHTML = '<div><div class="lender-name">' + pos.lender + '</div><div class="lender-weekly">$' + amt.toLocaleString('en-US',{minimumFractionDigits:2}) + ' ' + freq + ' x' + multiplier + ' = monthly est.</div></div>' +
-        '<input class="balance-input" type="text" placeholder="$0.00" value="' + monthlyStr + '" data-lender="' + pos.lender + '" oninput="updateTotal()">';
-      list.appendChild(row);
-    });
-
-    updateTotal();
-  }
-
-  function updateTotal() {
-    const inputs = document.querySelectorAll('.balance-input');
-    let total = 0;
-    inputs.forEach(inp => {
-      const val = parseFloat(inp.value.replace(/[$,]/g,'')) || 0;
-      total += val;
-    });
-    document.getElementById('total-display').textContent = '$' + total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-  }
-
-  async function generateExcel() {
-    const inputs = document.querySelectorAll('.balance-input');
-    const balances = {};
-    inputs.forEach(inp => {
-      const val = parseFloat(inp.value.replace(/[$,]/g,'')) || 0;
-      balances[inp.dataset.lender] = val;
-    });
-
-    const payload = Object.assign({}, parsedData, { balances: balances });
-
-    setStatus('status-panel2','status-icon2','status-title2','status-msg2','loading','Generating Excel...','Building your formatted report.','<div class="spinner"></div>');
-
-    try {
-      const res = await fetch('/generate', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(payload)
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        setStatus('status-panel2','status-icon2','status-title2','status-msg2','error','Failed',err.error || 'Error generating Excel.','<span style="font-size:24px">⚠️</span>');
-        return;
-      }
-
       const blob = await res.blob();
       const cd = res.headers.get('Content-Disposition') || '';
       const fn = (cd.match(/filename="?([^"]+)"?/) || [])[1] || 'analysis.xlsx';
@@ -318,24 +286,98 @@
       const a = document.createElement('a');
       a.href=url; a.download=fn; a.click();
       URL.revokeObjectURL(url);
-
-      setStatus('status-panel2','status-icon2','status-title2','status-msg2','success','Downloaded!','Your Excel report has been saved to your downloads folder.','<span style="font-size:24px">✅</span>');
-
+      setStatus('success','Excel Report Downloaded!',fn + ' has been saved to your downloads. Page will refresh to show in history.','<span style="font-size:22px">✓</span>');
+      document.getElementById('analyze-btn').disabled = false;
+      setTimeout(() => location.reload(), 3000);
     } catch(err) {
-      setStatus('status-panel2','status-icon2','status-title2','status-msg2','error','Connection Error','Could not reach the server.','<span style="font-size:24px">⚠️</span>');
+      setStatus('error','Connection Error','Could not reach the server.','<span style="font-size:22px">!</span>');
+      document.getElementById('analyze-btn').disabled = false;
     }
   }
 
-  function startOver() {
-    selectedFiles = [];
-    parsedData = null;
-    document.getElementById('step2').style.display = 'none';
-    document.getElementById('step1').style.display = 'block';
-    document.getElementById('file-list').innerHTML = '';
-    document.getElementById('analyze-btn').disabled = true;
-    document.getElementById('status-panel').className = 'status-panel';
-    document.getElementById('company-name').value = '';
+  // Modal
+  function openAddModal(entryId, companyName) {
+    currentEntryId = entryId;
+    modalFiles = [];
+    document.getElementById('modal-company-name').textContent = companyName;
+    document.getElementById('modal-file-list').innerHTML = '';
+    document.getElementById('modal-submit').disabled = true;
+    document.getElementById('modal-status').className = 'status-panel';
+    document.getElementById('add-modal').classList.add('active');
   }
+
+  function closeModal() {
+    document.getElementById('add-modal').classList.remove('active');
+    currentEntryId = '';
+    modalFiles = [];
+  }
+
+  document.getElementById('modal-file-input').addEventListener('change', function(){
+    const allowed = ['pdf','csv','txt'];
+    for (const f of this.files) {
+      const ext = f.name.split('.').pop().toLowerCase();
+      if (allowed.includes(ext) && !modalFiles.find(x => x.name === f.name)) modalFiles.push(f);
+    }
+    renderModalFiles();
+  });
+
+  function renderModalFiles() {
+    const list = document.getElementById('modal-file-list');
+    list.innerHTML = '';
+    modalFiles.forEach(f => {
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.innerHTML = '<span>📄</span><span class="file-name">' + f.name + '</span><span class="file-size">' + formatBytes(f.size) + '</span>';
+      list.appendChild(div);
+    });
+    document.getElementById('modal-submit').disabled = modalFiles.length === 0;
+  }
+
+  async function submitAdditional() {
+    if (!modalFiles.length || !currentEntryId) return;
+    document.getElementById('modal-submit').disabled = true;
+    const sp = document.getElementById('modal-status');
+    sp.className = 'status-panel loading';
+    document.getElementById('modal-status-icon').innerHTML = '<div class="spinner"></div>';
+    document.getElementById('modal-status-title').textContent = 'Analyzing and merging...';
+    document.getElementById('modal-status-msg').textContent = 'This may take 30-60 seconds.';
+
+    const fd = new FormData();
+    modalFiles.forEach(f => fd.append('files', f));
+    fd.append('entry_id', currentEntryId);
+
+    try {
+      const res = await fetch('/analyze', { method:'POST', body:fd });
+      if (!res.ok) {
+        const err = await res.json();
+        sp.className = 'status-panel error';
+        document.getElementById('modal-status-title').textContent = 'Failed';
+        document.getElementById('modal-status-msg').textContent = err.error || 'Error occurred.';
+        document.getElementById('modal-submit').disabled = false;
+        return;
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get('Content-Disposition') || '';
+      const fn = (cd.match(/filename="?([^"]+)"?/) || [])[1] || 'analysis.xlsx';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href=url; a.download=fn; a.click();
+      URL.revokeObjectURL(url);
+      sp.className = 'status-panel success';
+      document.getElementById('modal-status-title').textContent = 'Done! Report downloaded.';
+      document.getElementById('modal-status-msg').textContent = 'New months have been merged into the existing analysis.';
+      setTimeout(() => { closeModal(); location.reload(); }, 2500);
+    } catch(err) {
+      sp.className = 'status-panel error';
+      document.getElementById('modal-status-title').textContent = 'Connection Error';
+      document.getElementById('modal-status-msg').textContent = 'Could not reach the server.';
+      document.getElementById('modal-submit').disabled = false;
+    }
+  }
+
+  document.getElementById('add-modal').addEventListener('click', function(e){
+    if (e.target === this) closeModal();
+  });
 </script>
 </body>
 </html>
