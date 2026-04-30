@@ -1,4 +1,4 @@
-import os, json, re, io, csv, anthropic
+import os, json, re, io, anthropic
 from flask import Flask, request, jsonify, send_file, render_template
 from werkzeug.utils import secure_filename
 import pdfplumber, openpyxl
@@ -9,7 +9,6 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.environ.get('UPLOAD_FOLDER', '/tmp/uploads')
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'pdf', 'csv', 'txt'}
-
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 def allowed_file(f): return '.' in f and f.rsplit('.',1)[1].lower() in ALLOWED_EXTENSIONS
@@ -47,7 +46,7 @@ def parse_with_claude(raw_text, company_name=""):
         "- neg_days: count of negative balances in DAILY ENDING BALANCE table\n"
         "- days_below_1000: count of balances under 1000 in DAILY ENDING BALANCE table\n"
         "- funding_events: incoming Fedwire credits that are MCA loans\n\n"
-        "FOR CURRENT POSITIONS: find all recurring ACH debits in Electronic Withdrawals. Use most recent amount per lender.\n\n"
+        "FOR CURRENT POSITIONS: find all recurring ACH debits in Electronic Withdrawals. Use most recent amount per lender. Do NOT calculate total_current_positions - leave it as 0.\n\n"
         "Return this JSON structure:\n"
         '{"company_name":"string","account_number_last4":"string","num_bank_accounts":1,'
         '"offer_decline":"DECLINE","holdback_pct":0.0,"sos_info":"","court_search_notes":"",'
@@ -77,7 +76,7 @@ def build_excel(data):
     ws = wb.active
     ws.title = "Analysis"
 
-    GOLD="#C8962A"; GOLD_PALE="FFF8E1"; LIGHT_YELLOW="FFFF99"; DARK_GOLD="8B6914"
+    GOLD_PALE="FFF8E1"; LIGHT_YELLOW="FFFF99"; DARK_GOLD="8B6914"
     GREEN_BG="C6EFCE"; GREEN_FG="006100"; RED_BG="FFC7CE"; RED_FG="9C0006"
     BLUE="0070C0"; PURPLE_BG="EAD5F5"; GRAY="F2F2F2"
     NEG_BG="FFC7CE"; OK_BG="C6EFCE"; MONTH_BG="FFD966"
@@ -197,10 +196,11 @@ def build_excel(data):
     for pos in data.get("current_positions",[]):
         ws.row_dimensions[row].height=15
         lender=pos.get("lender",""); amt=pos.get("amount",0)
+        bal=pos.get("outstanding_balance",0)
         freq=pos.get("frequency","weekly"); notes=pos.get("notes","")
         lclr=BLUE if amt and amt>0 else "808080"
         w(row,2,lender,sz=9,color=lclr)
-        if amt: w(row,3,"${:,.2f}".format(amt),sz=9,align="right")
+        w(row,3,"${:,.2f}".format(bal) if bal else "",sz=9,align="right",color=BLUE)
         if freq: w(row,4,"*"+freq,sz=9,italic=True)
         if notes: w(row,5,"*"+notes,sz=9,italic=True,color="CC0000")
         row+=1
@@ -287,8 +287,8 @@ def build_excel(data):
 @app.route('/')
 def index(): return render_template('index.html')
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
+@app.route('/parse', methods=['POST'])
+def parse():
     if 'files' not in request.files: return jsonify({"error":"No files uploaded"}),400
     files=request.files.getlist('files')
     company_name=request.form.get('company_name','')
@@ -301,7 +301,7 @@ def analyze():
             fpath=os.path.join(app.config['UPLOAD_FOLDER'],fname)
             file.save(fpath)
             try:
-                combined_text+= "\n\n=== FILE: {} ===\n".format(fname) + extract_text(fpath)
+                combined_text+="\n\n=== FILE: {} ===\n".format(fname)+extract_text(fpath)
             except Exception as e:
                 return jsonify({"error":"Failed to read {}: {}".format(fname,str(e))}),500
             finally:
@@ -313,12 +313,30 @@ def analyze():
     try: parsed=parse_with_claude(combined_text,company_name)
     except Exception as e: return jsonify({"error":"AI parsing failed: {}".format(str(e))}),500
 
-    try: excel=build_excel(parsed)
-    except Exception as e: return jsonify({"error":"Excel generation failed: {}".format(str(e))}),500
+    return jsonify(parsed)
 
-    safe=re.sub(r'[^\w\s-]','',parsed.get("company_name","analysis")).strip().replace(' ','_')
-    return send_file(excel,as_attachment=True,download_name=safe+"_analysis.xlsx",
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+@app.route('/generate', methods=['POST'])
+def generate():
+    try:
+        data = request.get_json()
+        if not data: return jsonify({"error":"No data received"}),400
+
+        positions = data.get("current_positions",[])
+        balances = data.get("balances",{})
+        total = 0
+        for pos in positions:
+            lender = pos.get("lender","")
+            bal = float(balances.get(lender, 0) or 0)
+            pos["outstanding_balance"] = bal
+            total += bal
+        data["total_current_positions"] = total
+
+        excel = build_excel(data)
+        safe = re.sub(r'[^\w\s-]','',data.get("company_name","analysis")).strip().replace(' ','_')
+        return send_file(excel,as_attachment=True,download_name=safe+"_analysis.xlsx",
+                        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        return jsonify({"error":"Excel generation failed: {}".format(str(e))}),500
 
 if __name__=='__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5001)))
