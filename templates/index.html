@@ -135,7 +135,7 @@
         <div class="card-title"><span class="step-badge">3</span> Enter Outstanding Balances</div>
       </div>
       <div class="card-body">
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">The AI found these lenders in the statements. Enter the current outstanding balance owed to each one (from your MCA agreements). Leave blank if unknown.</p>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">The AI calculated each lender's monthly payment burden based on their frequency. Review and adjust any amounts if needed before generating the report.</p>
         <div id="lender-list"></div>
         <div class="total-row">
           <span class="total-label">Total Current Positions:</span>
@@ -260,8 +260,16 @@
     positions.forEach(pos => {
       const row = document.createElement('div');
       row.className = 'lender-row';
-      row.innerHTML = '<div><div class="lender-name">' + pos.lender + '</div><div class="lender-weekly">Weekly payment: $' + (pos.amount || 0).toLocaleString('en-US',{minimumFractionDigits:2}) + '</div></div>' +
-        '<input class="balance-input" type="text" placeholder="$0.00" data-lender="' + pos.lender + '" oninput="updateTotal()">';
+      const amt = pos.amount || 0;
+      const freq = (pos.frequency || 'weekly').toLowerCase();
+      let multiplier = 4;
+      if (freq.includes('daily')) multiplier = 22;
+      else if (freq.includes('bi')) multiplier = 2;
+      else if (freq.includes('monthly')) multiplier = 1;
+      const monthly = amt * multiplier;
+      const monthlyStr = monthly > 0 ? monthly.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
+      row.innerHTML = '<div><div class="lender-name">' + pos.lender + '</div><div class="lender-weekly">$' + amt.toLocaleString('en-US',{minimumFractionDigits:2}) + ' ' + freq + ' x' + multiplier + ' = monthly est.</div></div>' +
+        '<input class="balance-input" type="text" placeholder="$0.00" value="' + monthlyStr + '" data-lender="' + pos.lender + '" oninput="updateTotal()">';
       list.appendChild(row);
     });
 
