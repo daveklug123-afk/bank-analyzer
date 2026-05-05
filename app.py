@@ -20,86 +20,11 @@ USERS = {
     os.environ.get('USERNAME2', 'admin'): os.environ.get('PASSWORD2', 'analyze2026'),
 }
 
-# ── Disk-based job store (works across multiple Gunicorn workers) ────────────
-# Jobs are stored as .pkl files so any worker can read them
+# ── In-memory job store — safe because workers=1 in gunicorn.conf.py ─────────
+JOBS = {}
 JOBS_LOCK = threading.Lock()
 
-def _job_path(job_id):
-    return os.path.join(app.config['HISTORY_FOLDER'], 'job_' + job_id + '.pkl')
-
-def job_set(job_id, **kwargs):
-    path = _job_path(job_id)
-    with JOBS_LOCK:
-        try:
-            current = pickle.load(open(path, 'rb')) if os.path.exists(path) else {}
-        except:
-            current = {}
-        current.update(kwargs)
-        with open(path, 'wb') as f:
-            pickle.dump(current, f)
-
-def job_get(job_id):
-    path = _job_path(job_id)
-    try:
-        if os.path.exists(path):
-            with open(path, 'rb') as f:
-                return pickle.load(f)
-    except:
-        pass
-    return {}
-
-def run_analysis_job(job_id, combined_text, company_name, entry_id, existing_entry):
-    """Runs in a background thread — no Gunicorn timeout applies."""
-    try:
-        # Step 1: Parse
-        job_set(job_id, status="running", progress=20,
-                message="Pass 1 of 2 — Extracting data from statement...")
-        new_data = parse_with_claude(combined_text, company_name)
-        new_data = sanitize_data(new_data)
-
-        # Step 2: Verify
-        job_set(job_id, status="running", progress=55,
-                message="Pass 2 of 2 — Running independent verification check...")
-        try:
-            verify_flags = verify_with_claude(combined_text, new_data)
-            existing_flags = new_data.get("review_flags", [])
-            new_data["review_flags"] = verify_flags + existing_flags
-        except Exception as e:
-            new_data.setdefault("review_flags", []).insert(0, {
-                "type": "VERIFY_ERROR",
-                "field": "verification_pass",
-                "value": "Verification did not run",
-                "confidence": 0.0,
-                "reason": "Second-pass verification error: {}".format(str(e)),
-                "month": "ALL"
-            })
-
-        # Step 3: Merge with existing if needed
-        if existing_entry:
-            new_data = merge_data(existing_entry['data'], new_data)
-
-        # Step 4: Build Excel
-        job_set(job_id, status="running", progress=85,
-                message="Building Excel output...")
-        excel = build_excel(new_data)
-        excel_bytes = excel.read()
-
-        # Step 5: Save history
-        cn = new_data.get("company_name", "Unknown")
-        entry_id = save_history(cn, new_data, excel_bytes)
-        safe = re.sub(r'[^\w\s-]', '', cn).strip().replace(' ', '_')
-
-        job_set(job_id, status="done", progress=100,
-                message="Complete",
-                data=new_data,
-                excel_bytes=excel_bytes,
-                entry_id=entry_id,
-                filename=safe + "_analysis.xlsx")
-
-    except Exception as e:
-        job_set(job_id, status="error", progress=0,
-                message="Analysis failed",
-                error=str(e))
+# run_analysis_job removed — using synchronous route
 
 def login_required(f):
     from functools import wraps
@@ -1122,6 +1047,44 @@ def index():
     history = load_history()
     return render_template('index.html', history=history)
 
+# run_analysis_job — background thread, safe because workers=1
+def run_analysis_job(job_id, combined_text, company_name, entry_id, existing_entry):
+    try:
+        JOBS[job_id].update({"progress": 20, "message": "Pass 1 of 2 — Extracting data..."})
+        new_data = parse_with_claude(combined_text, company_name)
+        new_data = sanitize_data(new_data)
+
+        JOBS[job_id].update({"progress": 55, "message": "Pass 2 of 2 — Running verification check..."})
+        try:
+            verify_flags = verify_with_claude(combined_text, new_data)
+            new_data["review_flags"] = verify_flags + new_data.get("review_flags", [])
+        except Exception as e:
+            new_data.setdefault("review_flags", []).insert(0, {
+                "type": "VERIFY_ERROR", "field": "verification_pass",
+                "value": "Verification did not run", "confidence": 0.0,
+                "reason": "Second-pass error: {}".format(str(e)), "month": "ALL"
+            })
+
+        if existing_entry:
+            new_data = merge_data(existing_entry['data'], new_data)
+
+        JOBS[job_id].update({"progress": 85, "message": "Building Excel output..."})
+        excel = build_excel(new_data)
+        excel_bytes = excel.read()
+
+        cn = new_data.get("company_name", "Unknown")
+        new_entry_id = save_history(cn, new_data, excel_bytes)
+        safe = re.sub(r'[^\w\s-]', '', cn).strip().replace(' ', '_')
+
+        JOBS[job_id].update({
+            "status": "done", "progress": 100, "message": "Complete",
+            "excel_bytes": excel_bytes, "entry_id": new_entry_id,
+            "filename": safe + "_analysis.xlsx"
+        })
+    except Exception as e:
+        JOBS[job_id].update({"status": "error", "progress": 0, "error": str(e)})
+
+
 @app.route('/analyze', methods=['POST'])
 @login_required
 def analyze():
@@ -1152,14 +1115,11 @@ def analyze():
     if not combined_text.strip():
         return jsonify({"error": "No text extracted"}), 400
 
-    # Load existing entry now (in the request thread) before handing off
-    existing_entry = None
-    if entry_id:
-        existing_entry = load_entry(entry_id)
+    existing_entry = load_entry(entry_id) if entry_id else None
 
-    # Create job and kick off background thread
     job_id = str(uuid.uuid4())
-    job_set(job_id, status="running", progress=5, message="Starting analysis...")
+    with JOBS_LOCK:
+        JOBS[job_id] = {"status": "running", "progress": 5, "message": "Starting analysis..."}
 
     t = threading.Thread(
         target=run_analysis_job,
@@ -1167,14 +1127,14 @@ def analyze():
         daemon=True
     )
     t.start()
-
     return jsonify({"job_id": job_id}), 202
 
 
 @app.route('/analyze/status/<job_id>')
 @login_required
 def analyze_status(job_id):
-    job = job_get(job_id)
+    with JOBS_LOCK:
+        job = dict(JOBS.get(job_id, {}))
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({
@@ -1182,6 +1142,7 @@ def analyze_status(job_id):
         "progress": job.get("progress", 0),
         "message":  job.get("message", ""),
         "error":    job.get("error", ""),
+        "entry_id": job.get("entry_id", ""),
         "filename": job.get("filename", "")
     })
 
@@ -1189,25 +1150,21 @@ def analyze_status(job_id):
 @app.route('/analyze/download/<job_id>')
 @login_required
 def analyze_download(job_id):
-    job = job_get(job_id)
+    with JOBS_LOCK:
+        job = dict(JOBS.get(job_id, {}))
     if not job or job.get("status") != "done":
         return "Job not ready or not found", 404
     excel_bytes = job.get("excel_bytes")
     if not excel_bytes:
-        return "Excel data missing — job may have expired", 404
+        return "Excel data missing", 404
     filename = job.get("filename", "analysis.xlsx")
-    # Do NOT delete the job here — user may want to add more documents
-    # Job files are cleaned up by load_history's 10-entry rotation
     resp = send_file(
         io.BytesIO(excel_bytes),
         as_attachment=True,
         download_name=filename,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
-    # Pass entry_id back in header so frontend can show "Add more docs" option
-    entry_id = job.get("entry_id", "")
-    if entry_id:
-        resp.headers['X-Entry-Id'] = entry_id
+    resp.headers['X-Entry-Id'] = job.get("entry_id", "")
     return resp
 
 @app.route('/history/<entry_id>/download')
