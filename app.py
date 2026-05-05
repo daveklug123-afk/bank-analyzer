@@ -1,10 +1,11 @@
-import os, json, re, io, anthropic, pickle, threading, uuid, time
+import os, json, re, io, anthropic, pickle
 from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
 from werkzeug.utils import secure_filename
 import pdfplumber, openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import datetime
+from collections import defaultdict
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'mca-analyzer-secret-2026')
@@ -19,12 +20,6 @@ USERS = {
     os.environ.get('USERNAME1', 'dave'): os.environ.get('PASSWORD1', 'mca2026'),
     os.environ.get('USERNAME2', 'admin'): os.environ.get('PASSWORD2', 'analyze2026'),
 }
-
-# ── In-memory job store — safe because workers=1 in gunicorn.conf.py ─────────
-JOBS = {}
-JOBS_LOCK = threading.Lock()
-
-# run_analysis_job removed — using synchronous route
 
 def login_required(f):
     from functools import wraps
@@ -53,7 +48,7 @@ def extract_text_from_pdf(path):
                         text_parts.append(t[:3000])
                 except:
                     pass
-    except Exception as e:
+    except:
         return ""
     return "\n".join(text_parts)
 
@@ -104,12 +99,12 @@ def sanitize_data(obj):
             if 0xFFFE <= cp <= 0xFFFF: continue
             result.append(ch)
         s = ''.join(result)
-        s = s.replace('–','-').replace('—','-')
+        s = s.replace('\u2013','-').replace('\u2014','-')
         s = s.replace('\u2018',"'").replace('\u2019',"'")
-        s = s.replace('"','"').replace('"','"')
-        s = s.replace('•','*').replace('\u00a0',' ')
-        s = s.replace('…','...').replace('−','-')
-        s = s.replace('·','*').replace('●','*')
+        s = s.replace('\u201c','"').replace('\u201d','"')
+        s = s.replace('\u2022','*').replace('\u00a0',' ')
+        s = s.replace('\u2026','...').replace('\u2212','-')
+        s = s.replace('\u00b7','*').replace('\u25cf','*')
         return s
     return obj
 
@@ -122,6 +117,212 @@ def load_entry(entry_id):
         entry['data'] = sanitize_data(entry['data'])
     return entry
 
+# ===========================================================
+# VALIDATION LAYER 1: MCA Pattern Rules Engine
+# Deterministic rules — no AI guessing needed for these
+# ===========================================================
+def run_rules_engine(raw_text):
+    """
+    Scan raw transaction text for recurring same-amount ACH debits.
+    Returns detected MCA positions with high confidence.
+    """
+    detected = {}
+    # Match ACH debit lines: date, description, amount
+    pattern = re.compile(
+        r'(\d{1,2}/\d{1,2})\s+.*?(?:Business to Business ACH Debit|ACH Debit)\s*[-–]\s*([A-Za-z0-9 &./\-]+?)\s+'
+        r'(?:Orig ID[:\s]+\S+\s+)?(?:Desc[:\s]+\S+\s+)?.*?([\d,]+\.\d{2})',
+        re.IGNORECASE
+    )
+    for m in pattern.finditer(raw_text):
+        date_str = m.group(1)
+        payee = re.sub(r'\s+', ' ', m.group(2).strip())[:40]
+        try:
+            amt = float(m.group(3).replace(',',''))
+        except:
+            continue
+        key = (payee.lower(), amt)
+        if key not in detected:
+            detected[key] = {'payee': payee, 'amount': amt, 'dates': []}
+        detected[key]['dates'].append(date_str)
+
+    positions = []
+    for (payee_lower, amt), info in detected.items():
+        count = len(info['dates'])
+        if count < 2:
+            continue
+        # Determine frequency from count relative to typical month
+        if count >= 18:
+            freq = 'daily'
+        elif count >= 4:
+            freq = 'weekly'
+        elif count >= 2:
+            freq = 'bi-weekly'
+        else:
+            freq = 'monthly'
+        positions.append({
+            'lender': info['payee'],
+            'amount': amt,
+            'frequency': freq,
+            'occurrence_count': count,
+            'confidence': 1.0,  # deterministic
+            'notes': 'Auto-detected: {} debits seen'.format(count)
+        })
+
+    # Sort by monthly impact descending
+    positions.sort(key=lambda x: calc_monthly(x['amount'], x['frequency']), reverse=True)
+    return positions
+
+# ===========================================================
+# VALIDATION LAYER 2: Balance Reconciliation
+# ===========================================================
+def reconcile_balances(raw_text, parsed_months):
+    """
+    For each month, check: beg_balance + deposits - withdrawals ≈ end_balance
+    Returns list of reconciliation results.
+    """
+    results = []
+    # Try to find beginning/ending balances from statement header
+    beg_pattern = re.compile(r'[Bb]eginning [Bb]alance\s+\$?([\d,]+\.\d{2})')
+    end_pattern = re.compile(r'[Ee]nding [Bb]alance\s+[\d]+\s+\$?([\-\d,]+\.\d{2})')
+    dep_pattern = re.compile(r'Deposits(?:/Credits)?\s+[\d]+\s+([\d,]+\.\d{2})')
+    with_pattern = re.compile(r'(?:Withdrawals?/Debits?|Total Withdrawals?)\s*[-]?\s*([\d,]+\.\d{2})')
+
+    beg_matches = beg_pattern.findall(raw_text)
+    end_matches = end_pattern.findall(raw_text)
+    dep_matches = dep_pattern.findall(raw_text)
+    with_matches = with_pattern.findall(raw_text)
+
+    for i, month in enumerate(parsed_months):
+        if i >= len(beg_matches) or i >= len(end_matches):
+            results.append({
+                'month': month.get('month_label','?'),
+                'status': 'SKIP',
+                'note': 'Balance data not found in text'
+            })
+            continue
+        try:
+            beg = float(beg_matches[i].replace(',',''))
+            end = float(end_matches[i].replace(',','').replace('-',''))
+            if end_matches[i].startswith('-'):
+                end = -end
+            deps = float(dep_matches[i].replace(',','')) if i < len(dep_matches) else 0
+            withs = float(with_matches[i].replace(',','')) if i < len(with_matches) else 0
+            expected = beg + deps - withs
+            diff = abs(expected - end)
+            if diff < 1.00:
+                results.append({'month': month.get('month_label','?'), 'status': 'PASS',
+                                 'note': 'Reconciles within $1.00'})
+            else:
+                results.append({'month': month.get('month_label','?'), 'status': 'FLAG',
+                                 'note': 'Discrepancy of ${:,.2f} — review totals'.format(diff),
+                                 'discrepancy': diff})
+        except:
+            results.append({'month': month.get('month_label','?'), 'status': 'SKIP',
+                             'note': 'Could not parse balance figures'})
+    return results
+
+# ===========================================================
+# VALIDATION LAYER 3: Multi-month Continuity Check
+# ===========================================================
+def check_continuity(raw_text, parsed_months):
+    """
+    Verify ending balance of month N = beginning balance of month N+1.
+    """
+    flags = []
+    beg_pattern = re.compile(r'[Bb]eginning [Bb]alance\s+\$?([\-\d,]+\.\d{2})')
+    end_pattern = re.compile(r'[Ee]nding [Bb]alance\s+\S+\s+\$?([\-\d,]+\.\d{2})')
+    begs = beg_pattern.findall(raw_text)
+    ends = end_pattern.findall(raw_text)
+
+    def parse_bal(s):
+        s = s.replace(',','')
+        return float('-'+s.lstrip('-')) if s.startswith('-') else float(s)
+
+    for i in range(len(ends)-1):
+        if i+1 >= len(begs):
+            break
+        try:
+            end_i = parse_bal(ends[i])
+            beg_next = parse_bal(begs[i+1])
+            diff = abs(end_i - beg_next)
+            if diff > 1.00:
+                m1 = parsed_months[i].get('month_label','?') if i < len(parsed_months) else '?'
+                m2 = parsed_months[i+1].get('month_label','?') if i+1 < len(parsed_months) else '?'
+                flags.append({
+                    'months': '{} -> {}'.format(m1, m2),
+                    'end_bal': end_i,
+                    'next_beg_bal': beg_next,
+                    'diff': diff,
+                    'note': 'Ending balance ${:,.2f} does not match next month opening ${:,.2f}'.format(end_i, beg_next)
+                })
+        except:
+            pass
+    return flags
+
+# ===========================================================
+# VALIDATION LAYER 4: Second-pass Claude Verification
+# ===========================================================
+def verify_with_claude(raw_text, parsed_data):
+    """
+    Independent second Claude review — checks for contradictions and missed items.
+    Returns a list of review flags.
+    """
+    client = anthropic.Anthropic()
+    positions_summary = "\n".join([
+        "  - {}: ${:,.2f} {} (monthly=${:,.2f})".format(
+            p.get('lender'), p.get('amount',0), p.get('frequency',''),
+            calc_monthly(p.get('amount',0), p.get('frequency','weekly'))
+        ) for p in parsed_data.get('current_positions', [])
+    ])
+    months_summary = "\n".join([
+        "  - {}: total_deposits=${:,.2f} true_deposits=${:,.2f} adb=${:,.2f} nsf={}".format(
+            m.get('month_label'), m.get('total_deposits',0),
+            m.get('true_deposits',0), m.get('adb',0), m.get('nsf_count',0)
+        ) for m in parsed_data.get('months', [])
+    ])
+
+    prompt = (
+        "You are a second independent MCA underwriter reviewing extracted bank statement data.\n"
+        "Your job is ONLY to find errors, contradictions, or missed items in the extraction.\n"
+        "Return ONLY valid JSON array, no markdown.\n\n"
+        "SOURCE STATEMENT TEXT (first 20000 chars):\n"
+        + raw_text[:20000] +
+        "\n\nEXTRACTED DATA TO VERIFY:\n"
+        "Current Positions:\n" + positions_summary +
+        "\nMonthly Data:\n" + months_summary +
+        "\n\nCheck for:\n"
+        "1. Any recurring ACH debits in the text NOT in the positions list\n"
+        "2. Total deposits in text that don't match extracted values (>$500 difference)\n"
+        "3. NSF/returned items in text not counted\n"
+        "4. MCA funding wires included in true_deposits that should be excluded\n"
+        "5. Wrong frequency (e.g. daily lender listed as weekly)\n"
+        "6. ADB significantly different from what Interest Summary shows\n\n"
+        "Return JSON array of issues found. Empty array [] if no issues.\n"
+        "Each issue: {\"type\": \"MISSING_POSITION|WRONG_AMOUNT|WRONG_FREQUENCY|WRONG_TOTAL|NSF_MISSED|ADB_WRONG|OTHER\","
+        " \"description\": \"clear explanation\", \"confidence\": 0.0-1.0}\n"
+        "Only flag real issues you can see in the source text. Do NOT flag things you cannot verify."
+    )
+
+    msg = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=2000,
+        messages=[{"role":"user","content":prompt}]
+    )
+    raw = msg.content[0].text.strip()
+    raw = re.sub(r'^```json\s*','',raw)
+    raw = re.sub(r'^```\s*','',raw)
+    raw = re.sub(r'\s*```$','',raw)
+    try:
+        issues = json.loads(raw)
+        if not isinstance(issues, list):
+            issues = []
+    except:
+        issues = []
+    return issues
+
+# ===========================================================
+# MAIN PARSE FUNCTION
+# ===========================================================
 def parse_with_claude(raw_text, company_name=""):
     client = anthropic.Anthropic()
     cn = company_name if company_name else 'auto-detect'
@@ -142,112 +343,44 @@ def parse_with_claude(raw_text, company_name=""):
         "  * If they debit every other week = 'bi-weekly'\n"
         "  * If they debit once per month = 'monthly'\n"
         "  COUNT the actual debits in the statement to determine frequency\n"
-        "- DO NOT multiply the amount by frequency - report the raw per-payment amount\n\n"
+        "- DO NOT multiply the amount by frequency - report the raw per-payment amount\n"
+        "- Also return a confidence score 0.0-1.0 for each position\n\n"
         "RULE 2 - TRUE DEPOSITS (only real business revenue):\n"
-        "INCLUDE:\n"
-        "  - POS/credit card processor deposits (Stripe, Lightspeed, Square, Clover, Synchrony Mtot Dep)\n"
-        "  - eDeposit IN Branch (cash deposits)\n"
-        "  - Mobile Deposits\n"
-        "  - ACH credits from real customers/vendors\n"
-        "  - Interest payments\n"
-        "EXCLUDE (these are NOT real revenue):\n"
-        "  - MCA funding credits\n"
-        "  - Incoming wire or ACH credit from known MCA lenders\n"
-        "  - Online transfers FROM personal/other business accounts\n"
-        "  - Book transfers between own accounts\n"
-        "  - Returned item credits\n\n"
+        "INCLUDE: POS/credit card processor deposits (Stripe, Lightspeed, Square, Clover, Synchrony Mtot Dep), "
+        "eDeposit IN Branch, Mobile Deposits, ACH credits from real customers/vendors, Interest payments\n"
+        "EXCLUDE: MCA funding credits (DC suffix on MCA names, wire credits from MCA lenders), "
+        "Fiji SPV LLC wire, Online transfers FROM personal accounts, Book transfers between own accounts, "
+        "Returned item credits\n\n"
         "RULE 3 - LEVERAGE PERCENTAGE:\n"
-        "  leverage_pct = (sum of all monthly MCA payment amounts / true monthly deposits) * 100\n\n"
+        "  leverage_pct = (sum of all monthly MCA payment amounts / true monthly deposits) * 100\n"
+        "  Use the most recent FULL month for this calculation\n\n"
         "RULE 4 - NSF / RETURNED ITEMS:\n"
+        "  Look for 'Items returned unpaid' section and 'Overdraft Fee' entries\n"
         "  nsf_count = number of items in 'Items returned unpaid' section\n"
         "  od_count = number of 'Overdraft Fee' charges\n\n"
         "RULE 5 - MONTHS:\n"
-        "  Extract EVERY statement period found.\n"
-        "  Most recent partial month = is_mtd: true\n\n"
-        "RULE 6 - TRANSACTION ACCOUNTING (CRITICAL):\n"
-        "  Every single transaction in the statement MUST be accounted for.\n"
-        "  For each transaction you process:\n"
-        "    - It must land in one of: true_deposits, excluded_deposits, current_positions, funding_events, or other_debits\n"
-        "    - If a transaction does not clearly fit any known category, add it to 'unclassified_transactions'\n"
-        "    - Do NOT silently ignore any transaction\n\n"
-        "RULE 7 - CONFIDENCE SCORES (CRITICAL):\n"
-        "  For every extracted field, assign a confidence score 0.0 to 1.0:\n"
-        "    1.0 = explicitly stated in the document, no ambiguity\n"
-        "    0.9 = very clear, minor formatting inference\n"
-        "    0.8 = reasonably clear but required some interpretation\n"
-        "    0.7 or below = uncertain, ambiguous, or inferred from limited data\n"
-        "  Any field with confidence < 1.0 MUST include a 'reason' string explaining WHY it's not 100%.\n"
-        "  Be strict - only give 1.0 if the value is explicitly written in the document.\n\n"
+        "  Extract EVERY statement period found. Each has a 'Statement period activity summary'.\n"
+        "  Most recent partial month = is_mtd: true\n"
+        "  total_deposits = Deposits/Credits total from the summary box\n"
+        "  adb = Average collected balance from Interest summary section\n"
+        "  Also return confidence scores for key fields\n\n"
         "Return this exact JSON structure:\n"
-        '{\n'
-        '  "company_name": "string",\n'
-        '  "company_name_confidence": 1.0,\n'
-        '  "account_number_last4": "string",\n'
-        '  "account_number_confidence": 1.0,\n'
-        '  "num_bank_accounts": 1,\n'
-        '  "offer_decline": "DECLINE",\n'
-        '  "holdback_pct": 0.0,\n'
-        '  "leverage_pct": 0.0,\n'
-        '  "leverage_pct_confidence": 0.9,\n'
-        '  "leverage_pct_confidence_reason": "calculated from extracted values",\n'
-        '  "sos_info": "",\n'
-        '  "court_search_notes": "",\n'
-        '  "account_notes": [],\n'
-        '  "current_positions": [\n'
-        '    {\n'
-        '      "lender": "name",\n'
-        '      "amount": 0.0,\n'
-        '      "amount_confidence": 1.0,\n'
-        '      "frequency": "daily/weekly/bi-weekly/monthly",\n'
-        '      "frequency_confidence": 0.9,\n'
-        '      "frequency_confidence_reason": "counted 18 debits across 22 business days",\n'
-        '      "notes": ""\n'
-        '    }\n'
-        '  ],\n'
-        '  "months": [\n'
-        '    {\n'
-        '      "month_label": "Mon-YY",\n'
-        '      "period": "MM/DD to MM/DD",\n'
-        '      "is_mtd": false,\n'
-        '      "total_deposits": 0.0,\n'
-        '      "total_deposits_confidence": 1.0,\n'
-        '      "true_deposits": 0.0,\n'
-        '      "true_deposits_confidence": 0.9,\n'
-        '      "true_deposits_confidence_reason": "",\n'
-        '      "true_deposit_exclusions": "",\n'
-        '      "neg_days": 0,\n'
-        '      "nsf_count": 0,\n'
-        '      "nsf_confidence": 1.0,\n'
-        '      "od_count": 0,\n'
-        '      "num_transactions": 0,\n'
-        '      "adb": 0.0,\n'
-        '      "adb_confidence": 1.0,\n'
-        '      "days_below_1000": 0,\n'
-        '      "days_below_1000_confidence": 0.8,\n'
-        '      "days_below_1000_confidence_reason": "inferred from daily balance table",\n'
-        '      "funding_events": [{"funder": "name", "amount": 0.0, "date": "MM/DD"}],\n'
-        '      "unclassified_transactions": [\n'
-        '        {\n'
-        '          "date": "MM/DD",\n'
-        '          "description": "raw transaction description",\n'
-        '          "amount": 0.0,\n'
-        '          "direction": "credit/debit",\n'
-        '          "reason_unclassified": "does not match any known category rule"\n'
-        '        }\n'
-        '      ],\n'
-        '      "notes": ""\n'
-        '    }\n'
-        '  ],\n'
-        '  "balance_reconciliation": {\n'
-        '    "opening_balance": 0.0,\n'
-        '    "closing_balance": 0.0,\n'
-        '    "stated_total_deposits": 0.0,\n'
-        '    "stated_total_withdrawals": 0.0,\n'
-        '    "calculated_closing_balance": 0.0,\n'
-        '    "reconciles": true,\n'
-        '    "discrepancy": 0.0\n'
-        '  }\n'
-        '}\n\n'
+        '{"company_name":"string","account_number_last4":"string","num_bank_accounts":1,'
+        '"offer_decline":"DECLINE","holdback_pct":0.0,"leverage_pct":0.0,'
+        '"sos_info":"","court_search_notes":"",'
+        '"account_notes":[],'
+        '"current_positions":['
+        '{"lender":"name","amount":0.0,"frequency":"daily/weekly/bi-weekly/monthly","notes":"","confidence":0.9}'
+        '],'
+        '"months":['
+        '{"month_label":"Mon-YY","period":"MM/DD to MM/DD","is_mtd":false,'
+        '"total_deposits":0.0,"total_deposits_confidence":0.9,'
+        '"true_deposits":0.0,"true_deposits_confidence":0.9,"true_deposit_exclusions":"",'
+        '"neg_days":0,"nsf_count":0,"od_count":0,"num_transactions":0,'
+        '"adb":0.0,"adb_confidence":0.9,"days_below_1000":0,'
+        '"funding_events":[{"funder":"name","amount":0.0,"date":"MM/DD"}],'
+        '"notes":""}'
+        ']}\n\n'
         "Company name if provided: " + cn
     )
     msg = client.messages.create(
@@ -261,6 +394,7 @@ def parse_with_claude(raw_text, company_name=""):
     raw = re.sub(r'\s*```$','',raw)
     data = json.loads(raw)
 
+    # Sanitize AI output immediately
     def clean_json(obj):
         if isinstance(obj, dict):
             return {k: clean_json(v) for k, v in obj.items()}
@@ -291,295 +425,33 @@ def parse_with_claude(raw_text, company_name=""):
         total += monthly
     data["total_current_positions"] = total
 
+    # Calculate leverage % if not set
     if not data.get("leverage_pct") and data.get("months"):
         full_months = [m for m in data["months"] if not m.get("is_mtd")]
         if full_months:
-            latest = full_months[0]
-            true_dep = latest.get("true_deposits", 0)
+            true_dep = full_months[0].get("true_deposits", 0)
             if true_dep > 0:
                 data["leverage_pct"] = round((total / true_dep) * 100, 2)
 
-    # Build the review flags list - collect everything below 100% confidence
-    # or unclassified transactions
-    review_flags = []
-
-    # Check top-level field confidences
-    top_level_confidence_fields = [
-        ("company_name", "company_name_confidence", None),
-        ("account_number_last4", "account_number_confidence", None),
-        ("leverage_pct", "leverage_pct_confidence", "leverage_pct_confidence_reason"),
-    ]
-    for field, conf_key, reason_key in top_level_confidence_fields:
-        conf = data.get(conf_key, 1.0)
-        if conf is not None and float(conf) < 1.0:
-            reason = data.get(reason_key, "") if reason_key else ""
-            review_flags.append({
-                "type": "LOW_CONFIDENCE",
-                "field": field,
-                "value": str(data.get(field, "")),
-                "confidence": conf,
-                "reason": reason,
-                "month": "—"
-            })
-
-    # Check position-level confidences
-    for pos in data.get("current_positions", []):
-        lender = pos.get("lender", "unknown")
-        for field, conf_key, reason_key in [
-            ("amount", "amount_confidence", None),
-            ("frequency", "frequency_confidence", "frequency_confidence_reason"),
-        ]:
-            conf = pos.get(conf_key, 1.0)
-            if conf is not None and float(conf) < 1.0:
-                reason = pos.get(reason_key, "") if reason_key else ""
-                review_flags.append({
-                    "type": "LOW_CONFIDENCE",
-                    "field": "position[{}].{}".format(lender, field),
-                    "value": str(pos.get(field, "")),
-                    "confidence": conf,
-                    "reason": reason,
-                    "month": "—"
-                })
-
-    # Check month-level confidences and unclassified transactions
-    for m in data.get("months", []):
-        label = m.get("month_label", "?")
-        month_confidence_fields = [
-            ("total_deposits", "total_deposits_confidence", None),
-            ("true_deposits", "true_deposits_confidence", "true_deposits_confidence_reason"),
-            ("nsf_count", "nsf_confidence", None),
-            ("adb", "adb_confidence", None),
-            ("days_below_1000", "days_below_1000_confidence", "days_below_1000_confidence_reason"),
-        ]
-        for field, conf_key, reason_key in month_confidence_fields:
-            conf = m.get(conf_key, 1.0)
-            if conf is not None and float(conf) < 1.0:
-                reason = m.get(reason_key, "") if reason_key else ""
-                review_flags.append({
-                    "type": "LOW_CONFIDENCE",
-                    "field": field,
-                    "value": str(m.get(field, "")),
-                    "confidence": conf,
-                    "reason": reason,
-                    "month": label
-                })
-
-        # Collect unclassified transactions
-        for txn in m.get("unclassified_transactions", []):
-            review_flags.append({
-                "type": "UNCLASSIFIED_TXN",
-                "field": "transaction",
-                "value": "{} | {} | ${:,.2f}".format(
-                    txn.get("date","?"),
-                    txn.get("description","?"),
-                    float(txn.get("amount", 0))
-                ),
-                "confidence": 0.0,
-                "reason": txn.get("reason_unclassified", "Not matched to any category rule"),
-                "month": label
-            })
-
-    # Balance reconciliation check
-    recon = data.get("balance_reconciliation", {})
-    if recon and not recon.get("reconciles", True):
-        disc = recon.get("discrepancy", 0)
-        review_flags.append({
-            "type": "BALANCE_MISMATCH",
-            "field": "balance_reconciliation",
-            "value": "Discrepancy: ${:,.2f}".format(abs(float(disc))),
-            "confidence": 0.0,
-            "reason": "Opening balance + deposits - withdrawals does not equal stated closing balance",
-            "month": "ALL"
-        })
-
-    data["review_flags"] = review_flags
-    data["balance_reconciliation"] = recon
-
     return data
-
-def verify_with_claude(raw_text, extracted_data):
-    """
-    Second independent Claude pass. Reads the raw statement text and the
-    already-extracted JSON side by side, then looks for contradictions,
-    missed positions, wrong totals, miscounted debits, or anything suspicious.
-    Returns a list of verification flags that get merged into review_flags.
-    """
-    client = anthropic.Anthropic()
-
-    # Compact summary of what was extracted so far
-    summary_lines = []
-    summary_lines.append("COMPANY: {}".format(extracted_data.get("company_name", "?")))
-    summary_lines.append("LEVERAGE: {}%".format(extracted_data.get("leverage_pct", 0)))
-
-    positions = extracted_data.get("current_positions", [])
-    summary_lines.append("POSITIONS FOUND ({}):".format(len(positions)))
-    for p in positions:
-        summary_lines.append("  - {} | ${} | {} | monthly=${:.2f}".format(
-            p.get("lender","?"), p.get("amount",0),
-            p.get("frequency","?"), p.get("monthly_amount",0)
-        ))
-
-    months = extracted_data.get("months", [])
-    summary_lines.append("MONTHS FOUND ({}):".format(len(months)))
-    for m in months:
-        summary_lines.append("  - {} | total_deposits=${} | true_deposits=${} | adb=${} | nsf={} | od={} | days_below_1000={}".format(
-            m.get("month_label","?"),
-            m.get("total_deposits",0),
-            m.get("true_deposits",0),
-            m.get("adb",0),
-            m.get("nsf_count",0),
-            m.get("od_count",0),
-            m.get("days_below_1000",0)
-        ))
-        for fe in m.get("funding_events", []):
-            summary_lines.append("    funding: {} ${} on {}".format(
-                fe.get("funder","?"), fe.get("amount",0), fe.get("date","?")
-            ))
-
-    recon = extracted_data.get("balance_reconciliation", {})
-    if recon:
-        summary_lines.append("RECONCILIATION: reconciles={} discrepancy={}".format(
-            recon.get("reconciles", "?"), recon.get("discrepancy", 0)
-        ))
-
-    extracted_summary = "\n".join(summary_lines)
-
-    prompt = (
-        "You are a SECOND independent MCA underwriter doing a QA review.\n"
-        "The FIRST analyst already extracted data from the bank statement. Your job is to VERIFY their work.\n"
-        "Be skeptical. Find errors, omissions, and contradictions.\n"
-        "Return ONLY valid JSON — no markdown, no explanation.\n\n"
-        "=== WHAT THE FIRST ANALYST EXTRACTED ===\n"
-        + extracted_summary +
-        "\n\n=== ORIGINAL BANK STATEMENT TEXT ===\n"
-        + raw_text[:60000] +
-        "\n\n=== YOUR VERIFICATION TASKS ===\n\n"
-        "TASK 1 — POSITION COUNT CHECK:\n"
-        "  Scan the statement for ALL recurring ACH debits. Count unique payees with 2+ debits.\n"
-        "  If you find a recurring debtor NOT in the extracted positions list, flag it.\n"
-        "  If a position's frequency looks wrong (e.g., counted as daily but only debited 8 times), flag it.\n"
-        "  If a position's per-payment amount looks wrong, flag it.\n\n"
-        "TASK 2 — DEPOSIT TOTAL CROSS-CHECK:\n"
-        "  For each month, verify the extracted total_deposits matches the statement's summary box.\n"
-        "  Verify true_deposits is reasonable (total minus known MCA fundings).\n"
-        "  Flag any month where the numbers seem off by more than $100.\n\n"
-        "TASK 3 — BALANCE CHECK:\n"
-        "  Verify: opening_balance + total_deposits - total_withdrawals - checks - fees = closing_balance.\n"
-        "  Flag if it doesn't reconcile within $1.00.\n\n"
-        "TASK 4 — NSF / NEGATIVE DAY CHECK:\n"
-        "  Scan the daily balance table. Count days where balance dropped below $1,000.\n"
-        "  Check for any 'NSF', 'returned item', 'overdraft fee' entries.\n"
-        "  Flag if the extracted counts don't match what you see.\n\n"
-        "TASK 5 — SUSPICIOUS PATTERNS:\n"
-        "  Flag any of these if found:\n"
-        "  - Round-trip transfers (money in and out to same entity same day or within 2 days)\n"
-        "  - Unusually large single deposits that could be MCA funding not captured\n"
-        "  - Payroll wire amounts that seem inconsistent month to month (possible double-counting)\n"
-        "  - Any wire OUT over $10,000 not explained by identified positions\n"
-        "  - Any wire IN over $5,000 not explained by identified revenue sources or funding events\n\n"
-        "TASK 6 — ADB CHECK:\n"
-        "  If a daily balance table is present, calculate the average yourself and compare to extracted ADB.\n"
-        "  Flag if difference is more than $500.\n\n"
-        "Return this exact JSON — include ONLY actual issues found, empty array if everything checks out:\n"
-        "{\n"
-        "  \"verification_passed\": true,\n"
-        "  \"issues\": [\n"
-        "    {\n"
-        "      \"task\": \"TASK 1\",\n"
-        "      \"severity\": \"HIGH/MEDIUM/LOW\",\n"
-        "      \"field\": \"exact field name or position lender name\",\n"
-        "      \"month\": \"Mon-YY or ALL\",\n"
-        "      \"extracted_value\": \"what the first analyst said\",\n"
-        "      \"actual_value\": \"what you found in the statement\",\n"
-        "      \"description\": \"clear explanation of the discrepancy\"\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "Set verification_passed to false if any HIGH or MEDIUM severity issues exist."
-    )
-
-    try:
-        msg = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = msg.content[0].text.strip()
-        raw = re.sub(r'^```json\s*', '', raw)
-        raw = re.sub(r'^```\s*', '', raw)
-        raw = re.sub(r'\s*```$', '', raw)
-        result = json.loads(raw)
-    except Exception as e:
-        # Verification failed to run — add a single flag noting this
-        return [{
-            "type": "VERIFY_ERROR",
-            "field": "verification_pass",
-            "value": "Verification could not complete",
-            "confidence": 0.0,
-            "reason": "Second-pass Claude verification threw an error: {}".format(str(e)),
-            "month": "ALL"
-        }]
-
-    issues = result.get("issues", [])
-    flags = []
-    for issue in issues:
-        severity = issue.get("severity", "LOW")
-        conf = 0.0 if severity == "HIGH" else (0.5 if severity == "MEDIUM" else 0.75)
-        desc = issue.get("description", "")
-        extracted = issue.get("extracted_value", "")
-        actual = issue.get("actual_value", "")
-        detail = desc
-        if extracted and actual and extracted != actual:
-            detail = "{} | Extracted: {} | Actual: {}".format(desc, extracted, actual)
-        flags.append({
-            "type": "VERIFY_{}".format(severity),
-            "field": issue.get("field", "unknown"),
-            "value": extracted,
-            "confidence": conf,
-            "reason": "[{}] {}".format(issue.get("task", "?"), detail),
-            "month": issue.get("month", "?")
-        })
-
-    # Add a summary flag if verification failed overall
-    if not result.get("verification_passed", True):
-        flags.insert(0, {
-            "type": "VERIFY_FAILED",
-            "field": "SECOND PASS RESULT",
-            "value": "{} issue(s) found".format(len(issues)),
-            "confidence": 0.0,
-            "reason": "Second independent Claude review found contradictions with the source statement. Review all VERIFY flags below.",
-            "month": "ALL"
-        })
-    else:
-        flags.insert(0, {
-            "type": "VERIFY_PASSED",
-            "field": "SECOND PASS RESULT",
-            "value": "PASSED",
-            "confidence": 1.0,
-            "reason": "Second independent Claude review found no contradictions with the source statement.",
-            "month": "ALL"
-        })
-
-    return flags
-
 
 def merge_data(existing, new_data):
     existing_labels = {m['month_label'] for m in existing.get('months', [])}
     for m in new_data.get('months', []):
         if m['month_label'] not in existing_labels:
             existing['months'].append(m)
+
     def month_sort_key(m):
         label = m.get('month_label', '')
         month_map = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,
                      'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12}
         try:
             parts = label.split('-')
-            mon = month_map.get(parts[0], 0)
-            yr = int(parts[1]) if len(parts) > 1 else 0
-            return yr * 100 + mon
+            return int(parts[1]) * 100 + month_map.get(parts[0], 0)
         except:
             return 0
     existing['months'].sort(key=month_sort_key, reverse=True)
+
     existing_lenders = {p['lender'] for p in existing.get('current_positions', [])}
     for p in new_data.get('current_positions', []):
         if p['lender'] not in existing_lenders:
@@ -587,45 +459,52 @@ def merge_data(existing, new_data):
     total = sum(calc_monthly(p.get('amount',0), p.get('frequency','weekly'))
                 for p in existing.get('current_positions', []))
     existing['total_current_positions'] = total
-
-    # Merge review flags
-    existing_flags = existing.get('review_flags', [])
-    new_flags = new_data.get('review_flags', [])
-    seen = {(f['field'], f['month'], f['value']) for f in existing_flags}
-    for flag in new_flags:
-        key = (flag['field'], flag['month'], flag['value'])
-        if key not in seen:
-            existing_flags.append(flag)
-            seen.add(key)
-    existing['review_flags'] = existing_flags
-
     return existing
 
+# ===========================================================
+# EXCEL BUILDER
+# ===========================================================
 def build_excel(data):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Analysis"
 
-    GOLD_PALE="FFF8E1"; LIGHT_YELLOW="FFFF99"; DARK_GOLD="8B6914"
-    GREEN_BG="C6EFCE"; GREEN_FG="006100"; RED_BG="FFC7CE"; RED_FG="9C0006"
-    BLUE="0070C0"; PURPLE_BG="EAD5F5"; GRAY="F2F2F2"
-    NEG_BG="FFC7CE"; OK_BG="C6EFCE"; MONTH_BG="FFD966"
-    REVIEW_BG="FFF2CC"; REVIEW_HEADER="FF6600"; UNCLASS_BG="FCE4D6"
-    RECON_BG="DEEBF7"
+    GOLD_PALE="FFFFF8E1"; LIGHT_YELLOW="FFFFFF99"; DARK_GOLD="FF8B6914"
+    GREEN_BG="FFC6EFCE"; GREEN_FG="FF006100"; RED_BG="FFFFC7CE"; RED_FG="FF9C0006"
+    BLUE="FF0070C0"; PURPLE_BG="FFEAD5F5"; GRAY="FFF2F2F2"
+    NEG_BG="FFFFC7CE"; OK_BG="FFC6EFCE"; MONTH_BG="FFFFD966"
+    YELLOW_FLAG="FFFFFF99"; ORANGE_FLAG="FFFFD28C"
 
     thin = Side(style='thin')
     def border_all():
         return Border(left=thin,right=thin,top=thin,bottom=thin)
 
+    def safe_str(val):
+        if val is None: return ""
+        s = str(val)
+        s = s.replace('\u2013','-').replace('\u2014','-')
+        s = s.replace('\u2018',"'").replace('\u2019',"'")
+        s = s.replace('\u201c','"').replace('\u201d','"')
+        s = s.replace('\u2022','*').replace('\u00a0',' ')
+        result = []
+        for ch in s:
+            cp = ord(ch)
+            if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue
+            if 0xD800 <= cp <= 0xDFFF: continue
+            if 0xFFFE <= cp <= 0xFFFF: continue
+            result.append(ch)
+        return ''.join(result)
+
     def w(row,col,value="",bold=False,sz=10,color=None,bg=None,align="left",
-          bdr=False,italic=False,ul=False,wrap=False):
+          bdr=False,italic=False,ul=False,wrap=False,flag=False):
         if isinstance(value, str): value = safe_str(value)
         c = ws.cell(row=row,column=col,value=value)
         kw={"bold":bold,"size":sz,"italic":italic}
         if ul: kw["underline"]="single"
         if color: kw["color"]=color
         c.font=Font(**kw)
-        if bg: c.fill=PatternFill("solid",start_color=bg)
+        actual_bg = YELLOW_FLAG if flag else bg
+        if actual_bg: c.fill=PatternFill("solid",start_color=actual_bg)
         c.alignment=Alignment(horizontal=align,vertical="center",wrap_text=wrap)
         if bdr: c.border=border_all()
         return c
@@ -636,25 +515,7 @@ def build_excel(data):
         except:
             pass
 
-    def safe_str(val):
-        if val is None: return ""
-        s = str(val)
-        s = s.replace('\u2013', '-').replace('\u2014', '-')
-        s = s.replace('\u2018', "'").replace('\u2019', "'")
-        s = s.replace('\u201c', '"').replace('\u201d', '"')
-        s = s.replace('\u2022', '*').replace('\u2023', '*')
-        s = s.replace('\u2026', '...').replace('\u00a0', ' ')
-        s = s.replace('\u2212', '-').replace('\u00d7', 'x')
-        result = []
-        for ch in s:
-            cp = ord(ch)
-            if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue
-            if 0xD800 <= cp <= 0xDFFF: continue
-            if 0xFFFE <= cp <= 0xFFFF: continue
-            result.append(ch)
-        return ''.join(result)
-
-    for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:14,8:40}.items():
+    for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:18,8:40}.items():
         ws.column_dimensions[get_column_letter(col)].width=wd
 
     row=1
@@ -697,12 +558,12 @@ def build_excel(data):
 
     ws.row_dimensions[row].height=6; row+=1
     ws.row_dimensions[row].height=18
-    w(row,5,"☐",sz=16,align="center"); row+=1
+    w(row,5,"",sz=16,align="center"); row+=1
 
     # Company name
     ws.row_dimensions[row].height=24
     merge(row,2,row,6)
-    c=ws.cell(row=row,column=2,value=data.get("company_name","COMPANY NAME").upper())
+    c=ws.cell(row=row,column=2,value=safe_str(data.get("company_name","COMPANY NAME")).upper())
     c.font=Font(bold=True,size=13,color=DARK_GOLD)
     c.fill=PatternFill("solid",start_color=LIGHT_YELLOW)
     c.alignment=Alignment(horizontal="left",vertical="center")
@@ -719,26 +580,29 @@ def build_excel(data):
 
     for note in data.get("account_notes",[])[:4]:
         ws.row_dimensions[row].height=15
-        clr="CC0000" if any(x in note.lower() for x in ["1,000","negative","nsf","returned","overdraft"]) else "000000"
+        clr="FFCC0000" if any(x in note.lower() for x in ["1,000","negative","nsf","returned","overdraft"]) else None
         w(row,2,"*"+note,sz=9,italic=True,color=clr); row+=1
     for _ in range(max(0,3-len(data.get("account_notes",[])))):
         ws.row_dimensions[row].height=14; row+=1
 
+    # Holdback, leverage
     hb=data.get("holdback_pct",0)
     lv=data.get("leverage_pct",0)
     ws.row_dimensions[row].height=18
     w(row,3,"Holdback %",bold=True,sz=10,align="right")
-    w(row,4,"{:.2f}%".format(hb),sz=10,align="center"); row+=1
+    w(row,4,"{:.2f}%".format(hb) if hb else "",sz=10,align="center"); row+=1
 
     ws.row_dimensions[row].height=18
     w(row,2,"SOS",bold=True,ul=True,sz=10)
     w(row,3,"New Holdback %",bold=True,sz=10,align="right")
-    w(row,4,"{:.2f}%".format(hb),sz=10,align="center"); row+=1
+    w(row,4,"{:.2f}%".format(hb) if hb else "",sz=10,align="center"); row+=1
 
+    lv_color = "FFCC0000" if lv > 50 else "FF006100"
+    lv_bg = "FFFFC7CE" if lv > 80 else (YELLOW_FLAG if lv > 50 else None)
     ws.row_dimensions[row].height=18
-    w(row,2,"Leverage %",bold=True,sz=10,color="CC0000" if lv > 50 else "000000")
-    w(row,3,"{:.2f}%".format(lv),bold=True,sz=11,align="center",
-      color="CC0000" if lv > 50 else GREEN_FG); row+=1
+    w(row,2,"Leverage %",bold=True,sz=10,color=lv_color)
+    w(row,3,"{:.2f}%".format(lv) if lv else "0.00%",bold=True,sz=11,align="center",
+      color=lv_color,bg=lv_bg); row+=1
 
     ws.row_dimensions[row].height=16
     sos=data.get("sos_info","")
@@ -750,10 +614,11 @@ def build_excel(data):
     court=data.get("court_search_notes","")
     w(row,2,court if court else "*No court records found",sz=9,italic=True,wrap=True); row+=2
 
+    # Account number
     ws.row_dimensions[row].height=20
     acct=data.get("account_number_last4","")
     merge(row,2,row,4)
-    c=ws.cell(row=row,column=2,value=acct if acct else "ACCOUNT DETAILS")
+    c=ws.cell(row=row,column=2,value=safe_str(acct) if acct else "ACCOUNT DETAILS")
     c.font=Font(bold=True,size=12,color=DARK_GOLD)
     c.fill=PatternFill("solid",start_color=GOLD_PALE)
     c.alignment=Alignment(horizontal="left",vertical="center")
@@ -764,18 +629,23 @@ def build_excel(data):
     w(row,2,"Current Positions:",bold=True,ul=True,sz=10)
     total=data.get("total_current_positions",0)
     w(row,3,"${:,.2f}".format(total) if total else "$0.00",bold=True,sz=10,color=BLUE,ul=True)
-    w(row,5,"(monthly total)",sz=8,italic=True,color="808080"); row+=1
+    w(row,5,"(monthly total)",sz=8,italic=True,color="FF808080"); row+=1
 
     for pos in data.get("current_positions",[]):
         ws.row_dimensions[row].height=15
-        lender=pos.get("lender",""); amt=pos.get("amount",0)
-        freq=pos.get("frequency","weekly"); notes=pos.get("notes","")
+        lender=safe_str(pos.get("lender",""))
+        amt=pos.get("amount",0)
+        freq=safe_str(pos.get("frequency","weekly"))
+        notes=safe_str(pos.get("notes",""))
         monthly=pos.get("monthly_amount", calc_monthly(amt, freq))
-        w(row,2,lender,sz=9,color=BLUE)
-        w(row,3,"${:,.2f}".format(amt) if amt else "",sz=9,align="right")
-        if freq: w(row,4,"*"+freq,sz=9,italic=True)
-        w(row,5,"= ${:,.2f}/mo".format(monthly),sz=8,italic=True,color="808080")
-        if notes: w(row,6,"*"+notes,sz=9,italic=True,color="CC0000")
+        conf=pos.get("confidence",1.0)
+        is_flagged = conf < 0.85
+        w(row,2,lender,sz=9,color=BLUE,flag=is_flagged)
+        w(row,3,"${:,.2f}".format(amt) if amt else "",sz=9,align="right",flag=is_flagged)
+        if freq: w(row,4,"*"+freq,sz=9,italic=True,flag=is_flagged)
+        w(row,5,"= ${:,.2f}/mo".format(monthly),sz=8,italic=True,color="FF808080")
+        if is_flagged: w(row,7,"⚑ conf={:.0f}%".format(conf*100),sz=8,italic=True,color="FFCC6600")
+        if notes: w(row,6,"*"+notes,sz=9,italic=True,color="FFCC0000")
         row+=1
 
     ws.row_dimensions[row].height=16
@@ -788,15 +658,15 @@ def build_excel(data):
                      'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12}
         try:
             parts = label.split('-')
-            mon = month_map.get(parts[0], 0)
-            yr = int(parts[1]) if len(parts) > 1 else 0
-            return yr * 100 + mon
+            return int(parts[1]) * 100 + month_map.get(parts[0], 0)
         except:
             return 0
-
     months_sorted = sorted(data.get("months",[]), key=month_sort_key, reverse=True)
+
     for m in months_sorted:
-        label=m.get("month_label",""); period=m.get("period",""); is_mtd=m.get("is_mtd",False)
+        label=safe_str(m.get("month_label",""))
+        period=safe_str(m.get("period",""))
+        is_mtd=m.get("is_mtd",False)
 
         ws.row_dimensions[row].height=22
         merge(row,2,row,7)
@@ -807,32 +677,33 @@ def build_excel(data):
         c.alignment=Alignment(horizontal="left",vertical="center")
         row+=1
 
-        ws.row_dimensions[row].height=16
+        # Total deposits
         td=m.get("total_deposits",0)
-        td_conf=float(m.get("total_deposits_confidence",1.0))
+        td_conf=m.get("total_deposits_confidence",1.0)
+        td_flag = td_conf < 0.85
+        ws.row_dimensions[row].height=16
         w(row,2,"Total deposits:",sz=10)
-        w(row,3,"${:,.2f}".format(td),sz=10,color=BLUE)
-        if is_mtd: w(row,4,"*calculated *",sz=9,italic=True,color="808080")
-        if td_conf < 1.0:
-            w(row,7,"⚑ {:.0f}% conf".format(td_conf*100),sz=8,italic=True,color=REVIEW_HEADER,bg=REVIEW_BG)
+        w(row,3,"${:,.2f}".format(td),sz=10,color=BLUE,flag=td_flag)
+        if is_mtd: w(row,4,"*calculated *",sz=9,italic=True,color="FF808080")
+        if td_flag: w(row,7,"⚑ conf={:.0f}%".format(td_conf*100),sz=8,italic=True,color="FFCC6600")
         row+=1
 
-        ws.row_dimensions[row].height=16
+        # True deposits
         trd=m.get("true_deposits",0)
-        trd_conf=float(m.get("true_deposits_confidence",1.0))
+        trd_conf=m.get("true_deposits_confidence",1.0)
+        trd_flag = trd_conf < 0.85
         lbl="True deposits (MTD):" if is_mtd else "True deposits:"
+        ws.row_dimensions[row].height=16
         w(row,2,lbl,sz=10)
-        w(row,3,"${:,.2f}".format(trd),sz=10,color=BLUE)
+        w(row,3,"${:,.2f}".format(trd),sz=10,color=BLUE,flag=trd_flag)
         ntx=m.get("num_transactions",0)
         if is_mtd and ntx: w(row,4,str(ntx),sz=10,align="center",color=BLUE)
-        excl=m.get("true_deposit_exclusions","")
-        if excl: w(row,5,"*excl. "+excl,sz=8,italic=True,color="808080",wrap=True)
-        if trd_conf < 1.0:
-            reason = m.get("true_deposits_confidence_reason","")
-            w(row,7,"⚑ {:.0f}% conf{}".format(trd_conf*100, ": "+reason if reason else ""),
-              sz=8,italic=True,color=REVIEW_HEADER,bg=REVIEW_BG)
+        excl=safe_str(m.get("true_deposit_exclusions",""))
+        if excl: w(row,5,"*excl. "+excl,sz=8,italic=True,color="FF808080",wrap=True)
+        if trd_flag: w(row,7,"⚑ conf={:.0f}%".format(trd_conf*100),sz=8,italic=True,color="FFCC6600")
         row+=1
 
+        # Neg/NSF/OD bar
         neg=m.get("neg_days",0); nsf=m.get("nsf_count",0); od=m.get("od_count",0)
         bar_label="Neg days # {} / NSF # {} / OD # {}".format(neg,nsf,od)
         bar_bg=NEG_BG if (neg>0 or nsf>0 or od>0) else OK_BG
@@ -842,187 +713,108 @@ def build_excel(data):
         c.font=Font(bold=True,size=9,color=bar_fg)
         c.fill=PatternFill("solid",start_color=bar_bg)
         c.alignment=Alignment(horizontal="left",vertical="center")
-        nsf_conf=float(m.get("nsf_confidence",1.0))
-        if nsf_conf < 1.0:
-            w(row,7,"⚑ NSF/OD {:.0f}% conf".format(nsf_conf*100),sz=8,italic=True,color=REVIEW_HEADER,bg=REVIEW_BG)
         row+=1
 
+        # ADB
         adb=m.get("adb",0)
-        adb_conf=float(m.get("adb_confidence",1.0))
+        adb_conf=m.get("adb_confidence",1.0)
+        adb_flag = adb_conf < 0.85
+        ws.row_dimensions[row].height=16
         w(row,2,"ADB (average daily balance)",sz=10)
-        w(row,3,"${:,.2f}".format(adb),sz=10,color=BLUE)
-        w(row,4,"*given" if adb_conf==1.0 else "*calculated",sz=9,italic=True,color="808080")
-        if adb_conf < 1.0:
-            w(row,7,"⚑ {:.0f}% conf".format(adb_conf*100),sz=8,italic=True,color=REVIEW_HEADER,bg=REVIEW_BG)
+        w(row,3,"${:,.2f}".format(adb),sz=10,color=BLUE,flag=adb_flag)
+        w(row,4,"*given" if adb else "*calculated",sz=9,italic=True,color="FF808080")
+        if adb_flag: w(row,7,"⚑ conf={:.0f}%".format(adb_conf*100),sz=8,italic=True,color="FFCC6600")
         row+=1
 
+        # Days below 1000
         dl=m.get("days_below_1000",0)
-        dl_conf=float(m.get("days_below_1000_confidence",1.0))
+        ws.row_dimensions[row].height=16
         w(row,2,"Days below $1,000:",sz=10)
-        w(row,3,str(dl),sz=10,align="center")
-        if dl_conf < 1.0:
-            reason = m.get("days_below_1000_confidence_reason","")
-            w(row,7,"⚑ {:.0f}% conf{}".format(dl_conf*100, ": "+reason if reason else ""),
-              sz=8,italic=True,color=REVIEW_HEADER,bg=REVIEW_BG)
-        row+=1
+        w(row,3,str(dl),sz=10,align="center"); row+=1
 
+        # Funding events
         for fe in m.get("funding_events",[]):
-            w(row,2,"*Funded by "+fe.get("funder",""),sz=9,italic=True,color=BLUE)
+            w(row,2,"*Funded by "+safe_str(fe.get("funder","")),sz=9,italic=True,color=BLUE)
             amt_fe=fe.get("amount",0)
             w(row,3,"with an amount of ${:,.2f}".format(amt_fe) if amt_fe else "",sz=9,italic=True)
-            dt=fe.get("date","")
+            dt=safe_str(fe.get("date",""))
             if dt: w(row,4,"on "+dt,sz=9,italic=True)
             row+=1
 
-        mnotes=m.get("notes","")
+        mnotes=safe_str(m.get("notes",""))
         if mnotes:
-            w(row,2,"*"+mnotes,sz=9,italic=True,color="808080",wrap=True); row+=1
+            w(row,2,"*"+mnotes,sz=9,italic=True,color="FF808080",wrap=True); row+=1
 
         row+=2
 
-    # ─── REVIEW REQUIRED SECTION ──────────────────────────────────────────────
+    # ===========================================================
+    # REVIEW FLAGS SECTION
+    # ===========================================================
     review_flags = data.get("review_flags", [])
-    recon = data.get("balance_reconciliation", {})
+    recon_results = data.get("reconciliation_results", [])
+    continuity_flags = data.get("continuity_flags", [])
+    verify_issues = data.get("verify_issues", [])
 
-    # Always render this section
-    ws.row_dimensions[row].height=6; row+=1
+    all_issues = []
+    for r in recon_results:
+        if r.get('status') == 'FLAG':
+            all_issues.append(("RECON", r.get('month','?'), r.get('note','')))
+    for c_flag in continuity_flags:
+        all_issues.append(("CONTINUITY", c_flag.get('months','?'), c_flag.get('note','')))
+    for v in verify_issues:
+        all_issues.append((v.get('type','VERIFY'), 'ALL', v.get('description','')))
+    for rf in review_flags:
+        all_issues.append((rf.get('type','FLAG'), rf.get('month','?'), rf.get('reason','')))
 
-    # Section header
-    ws.row_dimensions[row].height=26
-    merge(row,2,row,8)
-    c=ws.cell(row=row,column=2,value="⚑  REVIEW REQUIRED — Items Flagged for Manual Verification")
-    c.font=Font(bold=True,size=12,color="FFFFFF")
-    c.fill=PatternFill("solid",start_color=REVIEW_HEADER)
-    c.alignment=Alignment(horizontal="left",vertical="center")
-    row+=1
-
-    # Balance reconciliation box
+    row += 1
     ws.row_dimensions[row].height=20
     merge(row,2,row,8)
-    c=ws.cell(row=row,column=2,value="BALANCE RECONCILIATION CHECK")
-    c.font=Font(bold=True,size=10,color="1F4E79")
-    c.fill=PatternFill("solid",start_color=RECON_BG)
+    c=ws.cell(row=row,column=2,value="REVIEW FLAGS")
+    c.font=Font(bold=True,size=12)
+    c.fill=PatternFill("solid",start_color="FF2D2D2D")
+    c.font=Font(bold=True,size=12,color="FFFFFFFF")
     c.alignment=Alignment(horizontal="left",vertical="center")
     row+=1
 
-    if recon:
-        reconciles = recon.get("reconciles", True)
-        disc = float(recon.get("discrepancy", 0))
-        status_text = "PASS — Balances reconcile" if reconciles else "FAIL — Discrepancy: ${:,.2f}".format(abs(disc))
-        status_bg = OK_BG if reconciles else NEG_BG
-        status_fg = GREEN_FG if reconciles else RED_FG
-
-        merge(row,2,row,5)
-        c=ws.cell(row=row,column=2,value=status_text)
-        c.font=Font(bold=True,size=10,color=status_fg)
-        c.fill=PatternFill("solid",start_color=status_bg)
+    if not all_issues:
+        ws.row_dimensions[row].height=18
+        merge(row,2,row,8)
+        c=ws.cell(row=row,column=2,value="✓ No review flags — all checks passed")
+        c.font=Font(bold=True,size=10,color=GREEN_FG)
+        c.fill=PatternFill("solid",start_color=OK_BG)
         c.alignment=Alignment(horizontal="left",vertical="center")
-        c.border=border_all()
-
-        w(row,6,"Opening: ${:,.2f}".format(float(recon.get("opening_balance",0))),sz=9,italic=True)
-        w(row,7,"Closing: ${:,.2f}".format(float(recon.get("closing_balance",0))),sz=9,italic=True)
         row+=1
     else:
-        w(row,2,"Balance reconciliation data not available",sz=9,italic=True,color="808080"); row+=1
-
-    row+=1
-
-    # Column headers for review flags table
-    if review_flags:
-        ws.row_dimensions[row].height=18
-        for col, hdr_text, wd in [
-            (2,"Month",8),(3,"Field",22),(4,"Extracted Value",20),
-            (5,"Source / Severity",14),(6,"Reason / Action Required",40)
-        ]:
-            c=ws.cell(row=row,column=col,value=hdr_text)
-            c.font=Font(bold=True,size=9,color="FFFFFF")
-            c.fill=PatternFill("solid",start_color="595959")
-            c.alignment=Alignment(horizontal="center",vertical="center")
-            c.border=border_all()
+        # Header
+        ws.row_dimensions[row].height=16
+        w(row,2,"Type",bold=True,sz=9,bg=GRAY)
+        w(row,3,"Month",bold=True,sz=9,bg=GRAY)
+        merge(row,4,row,8)
+        c=ws.cell(row=row,column=4,value="Issue / Action Required")
+        c.font=Font(bold=True,size=9)
+        c.fill=PatternFill("solid",start_color=GRAY)
+        c.alignment=Alignment(horizontal="left",vertical="center")
         row+=1
 
-        # Track when we transition from verify flags to confidence flags
-        # so we can insert a visual separator
-        in_verify_section = True
-        for flag in review_flags:
-            ftype = flag.get("type","")
-            is_verify = ftype.startswith("VERIFY_")
-
-            # Insert separator row when transitioning from verify to confidence flags
-            if in_verify_section and not is_verify:
-                in_verify_section = False
-                ws.row_dimensions[row].height=16
-                merge(row,2,row,6)
-                c=ws.cell(row=row,column=2,value="— FIRST-PASS CONFIDENCE FLAGS (fields below 100% confidence / unclassified transactions) —")
-                c.font=Font(bold=True,size=8,italic=True,color="595959")
-                c.fill=PatternFill("solid",start_color="EFEFEF")
-                c.alignment=Alignment(horizontal="center",vertical="center")
-                row+=1
-            ftype = flag.get("type","")
-
-            # Color coding by flag type
-            if ftype == "VERIFY_FAILED":
-                row_bg = "FF0000"; txt_color = "FFFFFF"
-            elif ftype == "VERIFY_PASSED":
-                row_bg = GREEN_BG; txt_color = GREEN_FG
-            elif ftype == "VERIFY_HIGH":
-                row_bg = NEG_BG; txt_color = RED_FG
-            elif ftype == "VERIFY_MEDIUM":
-                row_bg = "FFE0CC"; txt_color = "CC4400"
-            elif ftype == "VERIFY_LOW":
-                row_bg = REVIEW_BG; txt_color = REVIEW_HEADER
-            elif ftype == "VERIFY_ERROR":
-                row_bg = NEG_BG; txt_color = RED_FG
-            elif ftype == "UNCLASSIFIED_TXN":
-                row_bg = UNCLASS_BG; txt_color = "CC0000"
-            elif ftype == "BALANCE_MISMATCH":
-                row_bg = NEG_BG; txt_color = RED_FG
-            else:
-                row_bg = REVIEW_BG; txt_color = REVIEW_HEADER
-
-            conf = flag.get("confidence", 1.0)
-            if ftype == "VERIFY_PASSED":
-                conf_str = "PASS ✓"
-            elif ftype == "VERIFY_FAILED":
-                conf_str = "FAIL ✗"
-            elif ftype in ("UNCLASSIFIED_TXN", "BALANCE_MISMATCH", "VERIFY_ERROR"):
-                conf_str = ftype.replace("_", " ")
-            elif ftype in ("VERIFY_HIGH","VERIFY_MEDIUM","VERIFY_LOW"):
-                severity = ftype.replace("VERIFY_","")
-                conf_str = "2nd PASS — {}".format(severity)
-            else:
-                conf_str = "{:.0f}%".format(float(conf)*100)
-
-            ws.row_dimensions[row].height=30
-            w(row,2,flag.get("month","—"),sz=9,bg=row_bg,bdr=True,align="center")
-            w(row,3,flag.get("field",""),sz=9,bg=row_bg,bdr=True,wrap=True)
-            w(row,4,flag.get("value",""),sz=9,bg=row_bg,bdr=True,wrap=True)
-            c=ws.cell(row=row,column=5,value=conf_str)
-            c.font=Font(bold=True,size=9,color=txt_color)
-            c.fill=PatternFill("solid",start_color=row_bg)
-            c.alignment=Alignment(horizontal="center",vertical="center")
-            c.border=border_all()
-            w(row,6,flag.get("reason",""),sz=9,bg=row_bg,bdr=True,wrap=True)
+        for issue_type, month, desc in all_issues:
+            ws.row_dimensions[row].height=15
+            bg = YELLOW_FLAG if issue_type not in ("RECON","CONTINUITY") else ORANGE_FLAG
+            w(row,2,issue_type,sz=9,bg=bg)
+            w(row,3,str(month),sz=9,bg=bg)
+            merge(row,4,row,8)
+            c=ws.cell(row=row,column=4,value=safe_str(desc))
+            c.font=Font(size=9,italic=True)
+            c.fill=PatternFill("solid",start_color=bg)
+            c.alignment=Alignment(horizontal="left",vertical="center",wrap_text=True)
             row+=1
 
-    else:
-        # No flags - green all-clear
-        ws.row_dimensions[row].height=22
-        merge(row,2,row,8)
-        c=ws.cell(row=row,column=2,value="✓  No review flags — All fields extracted at 100% confidence, all transactions classified")
-        c.font=Font(bold=True,size=10,color=GREEN_FG)
-        c.fill=PatternFill("solid",start_color=GREEN_BG)
-        c.alignment=Alignment(horizontal="left",vertical="center")
-        c.border=border_all()
-        row+=1
-
-    row+=1
-
     ws.freeze_panes="B7"
-    wb.active.sheet_properties.tabColor="C8962A"
     out=io.BytesIO(); wb.save(out); out.seek(0)
     return out
 
+# ===========================================================
+# ROUTES
+# ===========================================================
 @app.route('/login', methods=['GET','POST'])
 def login():
     error = None
@@ -1047,125 +839,84 @@ def index():
     history = load_history()
     return render_template('index.html', history=history)
 
-# run_analysis_job — background thread, safe because workers=1
-def run_analysis_job(job_id, combined_text, company_name, entry_id, existing_entry):
-    try:
-        JOBS[job_id].update({"progress": 20, "message": "Pass 1 of 2 — Extracting data..."})
-        new_data = parse_with_claude(combined_text, company_name)
-        new_data = sanitize_data(new_data)
-
-        JOBS[job_id].update({"progress": 55, "message": "Pass 2 of 2 — Running verification check..."})
-        try:
-            verify_flags = verify_with_claude(combined_text, new_data)
-            new_data["review_flags"] = verify_flags + new_data.get("review_flags", [])
-        except Exception as e:
-            new_data.setdefault("review_flags", []).insert(0, {
-                "type": "VERIFY_ERROR", "field": "verification_pass",
-                "value": "Verification did not run", "confidence": 0.0,
-                "reason": "Second-pass error: {}".format(str(e)), "month": "ALL"
-            })
-
-        if existing_entry:
-            new_data = merge_data(existing_entry['data'], new_data)
-
-        JOBS[job_id].update({"progress": 85, "message": "Building Excel output..."})
-        excel = build_excel(new_data)
-        excel_bytes = excel.read()
-
-        cn = new_data.get("company_name", "Unknown")
-        new_entry_id = save_history(cn, new_data, excel_bytes)
-        safe = re.sub(r'[^\w\s-]', '', cn).strip().replace(' ', '_')
-
-        JOBS[job_id].update({
-            "status": "done", "progress": 100, "message": "Complete",
-            "excel_bytes": excel_bytes, "entry_id": new_entry_id,
-            "filename": safe + "_analysis.xlsx"
-        })
-    except Exception as e:
-        JOBS[job_id].update({"status": "error", "progress": 0, "error": str(e)})
-
-
 @app.route('/analyze', methods=['POST'])
 @login_required
 def analyze():
-    if 'files' not in request.files:
-        return jsonify({"error": "No files uploaded"}), 400
-    files = request.files.getlist('files')
-    company_name = request.form.get('company_name', '')
-    entry_id = request.form.get('entry_id', '')
-    if not files or all(f.filename == '' for f in files):
-        return jsonify({"error": "No files selected"}), 400
+    if 'files' not in request.files: return jsonify({"error":"No files uploaded"}),400
+    files=request.files.getlist('files')
+    company_name=request.form.get('company_name','')
+    entry_id=request.form.get('entry_id','')
+    if not files or all(f.filename=='' for f in files): return jsonify({"error":"No files selected"}),400
 
-    combined_text = ""
+    combined_text=""
     for file in files:
         if file and allowed_file(file.filename):
-            fname = secure_filename(file.filename)
-            fpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+            fname=secure_filename(file.filename)
+            fpath=os.path.join(app.config['UPLOAD_FOLDER'],fname)
             file.save(fpath)
             try:
-                combined_text += "\n\n=== FILE: {} ===\n".format(fname) + extract_text(fpath)
+                combined_text+="\n\n=== FILE: {} ===\n".format(fname)+extract_text(fpath)
             except Exception as e:
-                return jsonify({"error": "Failed to read {}: {}".format(fname, str(e))}), 500
+                return jsonify({"error":"Failed to read {}: {}".format(fname,str(e))}),500
             finally:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-        else:
-            return jsonify({"error": "Unsupported file: {}".format(file.filename)}), 400
+                if os.path.exists(fpath): os.remove(fpath)
+        else: return jsonify({"error":"Unsupported file: {}".format(file.filename)}),400
 
-    if not combined_text.strip():
-        return jsonify({"error": "No text extracted"}), 400
+    if not combined_text.strip(): return jsonify({"error":"No text extracted"}),400
 
-    existing_entry = load_entry(entry_id) if entry_id else None
+    try: new_data=parse_with_claude(combined_text,company_name)
+    except Exception as e: return jsonify({"error":"AI parsing failed: {}".format(str(e))}),500
 
-    job_id = str(uuid.uuid4())
-    with JOBS_LOCK:
-        JOBS[job_id] = {"status": "running", "progress": 5, "message": "Starting analysis..."}
+    new_data = sanitize_data(new_data)
 
-    t = threading.Thread(
-        target=run_analysis_job,
-        args=(job_id, combined_text, company_name, entry_id, existing_entry),
-        daemon=True
-    )
-    t.start()
-    return jsonify({"job_id": job_id}), 202
+    # Run deterministic rules engine and merge any new positions found
+    try:
+        rules_positions = run_rules_engine(combined_text)
+        existing_lenders = {p['lender'].lower() for p in new_data.get('current_positions',[])}
+        for rp in rules_positions:
+            if rp['lender'].lower() not in existing_lenders:
+                new_data.setdefault('current_positions',[]).append({
+                    'lender': rp['lender'],
+                    'amount': rp['amount'],
+                    'frequency': rp['frequency'],
+                    'confidence': 1.0,
+                    'notes': rp['notes'],
+                    'monthly_amount': calc_monthly(rp['amount'], rp['frequency'])
+                })
+    except: pass
 
+    # Balance reconciliation
+    try:
+        new_data['reconciliation_results'] = reconcile_balances(combined_text, new_data.get('months',[]))
+    except: pass
 
-@app.route('/analyze/status/<job_id>')
-@login_required
-def analyze_status(job_id):
-    with JOBS_LOCK:
-        job = dict(JOBS.get(job_id, {}))
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({
-        "status":   job.get("status", "unknown"),
-        "progress": job.get("progress", 0),
-        "message":  job.get("message", ""),
-        "error":    job.get("error", ""),
-        "entry_id": job.get("entry_id", ""),
-        "filename": job.get("filename", "")
-    })
+    # Multi-month continuity check
+    try:
+        new_data['continuity_flags'] = check_continuity(combined_text, new_data.get('months',[]))
+    except: pass
 
+    # Second-pass Claude verification
+    try:
+        new_data['verify_issues'] = verify_with_claude(combined_text, new_data)
+    except: pass
 
-@app.route('/analyze/download/<job_id>')
-@login_required
-def analyze_download(job_id):
-    with JOBS_LOCK:
-        job = dict(JOBS.get(job_id, {}))
-    if not job or job.get("status") != "done":
-        return "Job not ready or not found", 404
-    excel_bytes = job.get("excel_bytes")
-    if not excel_bytes:
-        return "Excel data missing", 404
-    filename = job.get("filename", "analysis.xlsx")
-    resp = send_file(
-        io.BytesIO(excel_bytes),
-        as_attachment=True,
-        download_name=filename,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-    resp.headers['X-Entry-Id'] = job.get("entry_id", "")
-    return resp
+    if entry_id:
+        existing = load_entry(entry_id)
+        if existing:
+            new_data = merge_data(existing['data'], new_data)
+
+    try:
+        excel=build_excel(new_data)
+        excel_bytes=excel.read()
+    except Exception as e:
+        return jsonify({"error":"Excel generation failed: {}".format(str(e))}),500
+
+    cn=new_data.get("company_name","Unknown")
+    save_history(cn, new_data, excel_bytes)
+    safe=re.sub(r'[^\w\s-]','',cn).strip().replace(' ','_')
+    return send_file(io.BytesIO(excel_bytes),as_attachment=True,
+                     download_name=safe+"_analysis.xlsx",
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 @app.route('/history/<entry_id>/download')
 @login_required
