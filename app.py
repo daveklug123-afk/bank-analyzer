@@ -20,20 +20,33 @@ USERS = {
     os.environ.get('USERNAME2', 'admin'): os.environ.get('PASSWORD2', 'analyze2026'),
 }
 
-# ── In-memory job store ──────────────────────────────────────────────────────
-# { job_id: { status, progress, message, data, excel_bytes, error } }
-JOBS = {}
+# ── Disk-based job store (works across multiple Gunicorn workers) ────────────
+# Jobs are stored as .pkl files so any worker can read them
 JOBS_LOCK = threading.Lock()
 
+def _job_path(job_id):
+    return os.path.join(app.config['HISTORY_FOLDER'], 'job_' + job_id + '.pkl')
+
 def job_set(job_id, **kwargs):
+    path = _job_path(job_id)
     with JOBS_LOCK:
-        if job_id not in JOBS:
-            JOBS[job_id] = {}
-        JOBS[job_id].update(kwargs)
+        try:
+            current = pickle.load(open(path, 'rb')) if os.path.exists(path) else {}
+        except:
+            current = {}
+        current.update(kwargs)
+        with open(path, 'wb') as f:
+            pickle.dump(current, f)
 
 def job_get(job_id):
-    with JOBS_LOCK:
-        return dict(JOBS.get(job_id, {}))
+    path = _job_path(job_id)
+    try:
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+    except:
+        pass
+    return {}
 
 def run_analysis_job(job_id, combined_text, company_name, entry_id, existing_entry):
     """Runs in a background thread — no Gunicorn timeout applies."""
@@ -73,13 +86,14 @@ def run_analysis_job(job_id, combined_text, company_name, entry_id, existing_ent
 
         # Step 5: Save history
         cn = new_data.get("company_name", "Unknown")
-        save_history(cn, new_data, excel_bytes)
+        entry_id = save_history(cn, new_data, excel_bytes)
         safe = re.sub(r'[^\w\s-]', '', cn).strip().replace(' ', '_')
 
         job_set(job_id, status="done", progress=100,
                 message="Complete",
                 data=new_data,
                 excel_bytes=excel_bytes,
+                entry_id=entry_id,
                 filename=safe + "_analysis.xlsx")
 
     except Exception as e:
@@ -1179,16 +1193,22 @@ def analyze_download(job_id):
     if not job or job.get("status") != "done":
         return "Job not ready or not found", 404
     excel_bytes = job.get("excel_bytes")
+    if not excel_bytes:
+        return "Excel data missing — job may have expired", 404
     filename = job.get("filename", "analysis.xlsx")
-    # Clean up job from memory after download
-    with JOBS_LOCK:
-        JOBS.pop(job_id, None)
-    return send_file(
+    # Do NOT delete the job here — user may want to add more documents
+    # Job files are cleaned up by load_history's 10-entry rotation
+    resp = send_file(
         io.BytesIO(excel_bytes),
         as_attachment=True,
         download_name=filename,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
+    # Pass entry_id back in header so frontend can show "Add more docs" option
+    entry_id = job.get("entry_id", "")
+    if entry_id:
+        resp.headers['X-Entry-Id'] = entry_id
+    return resp
 
 @app.route('/history/<entry_id>/download')
 @login_required
