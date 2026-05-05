@@ -23,7 +23,7 @@
   .topbar-user { font-size:13px; color:var(--text3); }
   .logout-btn { font-size:12px; color:var(--text3); text-decoration:none; padding:6px 12px; border:1px solid var(--border); border-radius:3px; transition:all .2s; }
   .logout-btn:hover { border-color:var(--border2); color:var(--text); }
-  .page { max-width:820px; margin:0 auto; padding:48px 24px 80px; position:relative; }
+  .page { max-width:820px; margin:0 auto; padding:48px 24px 80px; position:relative; cursor:default; }
   .header { margin-bottom:40px; }
   .header-badge { display:inline-block; font-family:'DM Mono',monospace; font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); border:1px solid var(--gold-dim); padding:5px 14px; border-radius:2px; background:rgba(200,150,42,0.06); margin-bottom:16px; }
   h1 { font-family:'DM Serif Display',serif; font-size:clamp(28px,5vw,44px); color:var(--gold2); line-height:1.1; margin-bottom:10px; }
@@ -39,7 +39,7 @@
   input[type=text] { width:100%; padding:12px 16px; background:#0D0D1A; border:1px solid var(--border); border-radius:4px; font-family:'DM Sans',sans-serif; font-size:15px; color:var(--text); outline:none; transition:border-color .2s; }
   input[type=text]:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,150,42,0.1); }
   input[type=text]::placeholder { color:var(--text3); }
-  .drop-zone { border:2px dashed var(--border); border-radius:4px; padding:36px 24px; text-align:center; cursor:pointer; transition:all .25s; background:rgba(255,255,255,0.01); }
+  .drop-zone { border:2px dashed var(--border); border-radius:4px; padding:36px 24px; text-align:center; cursor:pointer; transition:all .25s; background:rgba(255,255,255,0.01); position:relative; isolation:isolate; }
   .drop-zone:hover,.drop-zone.drag-over { border-color:var(--gold); background:rgba(200,150,42,0.04); transform:translateY(-1px); }
   .drop-icon { font-size:32px; margin-bottom:10px; display:block; }
   .drop-title { font-family:'DM Serif Display',serif; font-size:17px; color:var(--text); margin-bottom:4px; }
@@ -130,7 +130,7 @@
     </div>
     <div class="card-body">
       <label class="field-label">Company Name (optional)</label>
-      <input type="text" id="company-name" placeholder="e.g. Chief Top Remodeling Inc">
+      <input type="text" id="company-name" placeholder="Enter company name (optional)">
     </div>
   </div>
 
