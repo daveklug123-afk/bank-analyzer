@@ -32,12 +32,26 @@ def login_required(f):
 def allowed_file(f): return '.' in f and f.rsplit('.',1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_text_from_pdf(path):
-    text = ""
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t: text += t + "\n"
-    return text
+    # Memory-efficient extraction: limit to 15 pages max, process and discard each page
+    text_parts = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            # Prioritize first 8 pages (summary, deposits, withdrawals) and last 3 (daily balances, NSF)
+            total = len(pdf.pages)
+            if total <= 12:
+                pages_to_read = list(range(total))
+            else:
+                pages_to_read = list(range(8)) + list(range(max(8, total-4), total))
+            for i in pages_to_read:
+                try:
+                    t = pdf.pages[i].extract_text()
+                    if t:
+                        text_parts.append(t[:3000])  # cap each page at 3000 chars
+                except:
+                    pass
+    except Exception as e:
+        return ""
+    return "\n".join(text_parts)
 
 def extract_text(path):
     ext = path.rsplit('.',1)[1].lower()
@@ -179,7 +193,18 @@ def merge_data(existing, new_data):
     for m in new_data.get('months', []):
         if m['month_label'] not in existing_labels:
             existing['months'].append(m)
-    existing['months'].sort(key=lambda x: x.get('month_label',''), reverse=True)
+    def month_sort_key(m):
+        label = m.get('month_label', '')
+        month_map = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,
+                     'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12}
+        try:
+            parts = label.split('-')
+            mon = month_map.get(parts[0], 0)
+            yr = int(parts[1]) if len(parts) > 1 else 0
+            return yr * 100 + mon
+        except:
+            return 0
+    existing['months'].sort(key=month_sort_key, reverse=True)
     existing_lenders = {p['lender'] for p in existing.get('current_positions', [])}
     for p in new_data.get('current_positions', []):
         if p['lender'] not in existing_lenders:
@@ -205,6 +230,7 @@ def build_excel(data):
 
     def w(row,col,value="",bold=False,sz=10,color=None,bg=None,align="left",
           bdr=False,italic=False,ul=False,wrap=False):
+        if isinstance(value, str): value = safe_str(value)
         c = ws.cell(row=row,column=col,value=value)
         kw={"bold":bold,"size":sz,"italic":italic}
         if ul: kw["underline"]="single"
@@ -215,7 +241,17 @@ def build_excel(data):
         if bdr: c.border=border_all()
         return c
 
-    def merge(r1,c1,r2,c2): ws.merge_cells(start_row=r1,start_column=c1,end_row=r2,end_column=c2)
+    def merge(r1,c1,r2,c2):
+        try:
+            ws.merge_cells(start_row=r1,start_column=c1,end_row=r2,end_column=c2)
+        except:
+            pass  # Skip if already merged or invalid range
+
+    def safe_str(val):
+        if val is None: return ""
+        s = str(val)
+        # Remove illegal XML characters that corrupt xlsx
+        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
 
     for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:14,8:40}.items():
         ws.column_dimensions[get_column_letter(col)].width=wd
@@ -349,7 +385,20 @@ def build_excel(data):
     w(row,2,"Other Loans / Positions:",bold=True,sz=10); row+=2
 
     # Monthly sections
-    for m in data.get("months",[]):
+    # Sort months newest first before building Excel
+    def month_sort_key(m):
+        label = m.get('month_label', '')
+        month_map = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,
+                     'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12}
+        try:
+            parts = label.split('-')
+            mon = month_map.get(parts[0], 0)
+            yr = int(parts[1]) if len(parts) > 1 else 0
+            return yr * 100 + mon
+        except:
+            return 0
+    months_sorted = sorted(data.get("months",[]), key=month_sort_key, reverse=True)
+    for m in months_sorted:
         label=m.get("month_label",""); period=m.get("period",""); is_mtd=m.get("is_mtd",False)
 
         ws.row_dimensions[row].height=22
