@@ -1,4 +1,4 @@
-import os, json, re, io, anthropic, pickle
+import os, json, re, io, anthropic, pickle, threading, uuid, time
 from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
 from werkzeug.utils import secure_filename
 import pdfplumber, openpyxl
@@ -19,6 +19,73 @@ USERS = {
     os.environ.get('USERNAME1', 'dave'): os.environ.get('PASSWORD1', 'mca2026'),
     os.environ.get('USERNAME2', 'admin'): os.environ.get('PASSWORD2', 'analyze2026'),
 }
+
+# ── In-memory job store ──────────────────────────────────────────────────────
+# { job_id: { status, progress, message, data, excel_bytes, error } }
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+def job_set(job_id, **kwargs):
+    with JOBS_LOCK:
+        if job_id not in JOBS:
+            JOBS[job_id] = {}
+        JOBS[job_id].update(kwargs)
+
+def job_get(job_id):
+    with JOBS_LOCK:
+        return dict(JOBS.get(job_id, {}))
+
+def run_analysis_job(job_id, combined_text, company_name, entry_id, existing_entry):
+    """Runs in a background thread — no Gunicorn timeout applies."""
+    try:
+        # Step 1: Parse
+        job_set(job_id, status="running", progress=20,
+                message="Pass 1 of 2 — Extracting data from statement...")
+        new_data = parse_with_claude(combined_text, company_name)
+        new_data = sanitize_data(new_data)
+
+        # Step 2: Verify
+        job_set(job_id, status="running", progress=55,
+                message="Pass 2 of 2 — Running independent verification check...")
+        try:
+            verify_flags = verify_with_claude(combined_text, new_data)
+            existing_flags = new_data.get("review_flags", [])
+            new_data["review_flags"] = verify_flags + existing_flags
+        except Exception as e:
+            new_data.setdefault("review_flags", []).insert(0, {
+                "type": "VERIFY_ERROR",
+                "field": "verification_pass",
+                "value": "Verification did not run",
+                "confidence": 0.0,
+                "reason": "Second-pass verification error: {}".format(str(e)),
+                "month": "ALL"
+            })
+
+        # Step 3: Merge with existing if needed
+        if existing_entry:
+            new_data = merge_data(existing_entry['data'], new_data)
+
+        # Step 4: Build Excel
+        job_set(job_id, status="running", progress=85,
+                message="Building Excel output...")
+        excel = build_excel(new_data)
+        excel_bytes = excel.read()
+
+        # Step 5: Save history
+        cn = new_data.get("company_name", "Unknown")
+        save_history(cn, new_data, excel_bytes)
+        safe = re.sub(r'[^\w\s-]', '', cn).strip().replace(' ', '_')
+
+        job_set(job_id, status="done", progress=100,
+                message="Complete",
+                data=new_data,
+                excel_bytes=excel_bytes,
+                filename=safe + "_analysis.xlsx")
+
+    except Exception as e:
+        job_set(job_id, status="error", progress=0,
+                message="Analysis failed",
+                error=str(e))
 
 def login_required(f):
     from functools import wraps
@@ -1044,65 +1111,84 @@ def index():
 @app.route('/analyze', methods=['POST'])
 @login_required
 def analyze():
-    if 'files' not in request.files: return jsonify({"error":"No files uploaded"}),400
-    files=request.files.getlist('files')
-    company_name=request.form.get('company_name','')
-    entry_id=request.form.get('entry_id','')
-    if not files or all(f.filename=='' for f in files): return jsonify({"error":"No files selected"}),400
+    if 'files' not in request.files:
+        return jsonify({"error": "No files uploaded"}), 400
+    files = request.files.getlist('files')
+    company_name = request.form.get('company_name', '')
+    entry_id = request.form.get('entry_id', '')
+    if not files or all(f.filename == '' for f in files):
+        return jsonify({"error": "No files selected"}), 400
 
-    combined_text=""
+    combined_text = ""
     for file in files:
         if file and allowed_file(file.filename):
-            fname=secure_filename(file.filename)
-            fpath=os.path.join(app.config['UPLOAD_FOLDER'],fname)
+            fname = secure_filename(file.filename)
+            fpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
             file.save(fpath)
             try:
-                combined_text+="\n\n=== FILE: {} ===\n".format(fname)+extract_text(fpath)
+                combined_text += "\n\n=== FILE: {} ===\n".format(fname) + extract_text(fpath)
             except Exception as e:
-                return jsonify({"error":"Failed to read {}: {}".format(fname,str(e))}),500
+                return jsonify({"error": "Failed to read {}: {}".format(fname, str(e))}), 500
             finally:
-                if os.path.exists(fpath): os.remove(fpath)
-        else: return jsonify({"error":"Unsupported file: {}".format(file.filename)}),400
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+        else:
+            return jsonify({"error": "Unsupported file: {}".format(file.filename)}), 400
 
-    if not combined_text.strip(): return jsonify({"error":"No text extracted"}),400
+    if not combined_text.strip():
+        return jsonify({"error": "No text extracted"}), 400
 
-    try: new_data=parse_with_claude(combined_text,company_name)
-    except Exception as e: return jsonify({"error":"AI parsing failed: {}".format(str(e))}),500
-
-    new_data = sanitize_data(new_data)
-
-    # Second independent verification pass — runs before Excel is built
-    try:
-        verify_flags = verify_with_claude(combined_text, new_data)
-        existing_flags = new_data.get("review_flags", [])
-        new_data["review_flags"] = verify_flags + existing_flags
-    except Exception as e:
-        new_data.setdefault("review_flags", []).insert(0, {
-            "type": "VERIFY_ERROR",
-            "field": "verification_pass",
-            "value": "Verification did not run",
-            "confidence": 0.0,
-            "reason": "Second-pass verification error: {}".format(str(e)),
-            "month": "ALL"
-        })
-
+    # Load existing entry now (in the request thread) before handing off
+    existing_entry = None
     if entry_id:
-        existing = load_entry(entry_id)
-        if existing:
-            new_data = merge_data(existing['data'], new_data)
+        existing_entry = load_entry(entry_id)
 
-    try:
-        excel=build_excel(new_data)
-        excel_bytes=excel.read()
-    except Exception as e:
-        return jsonify({"error":"Excel generation failed: {}".format(str(e))}),500
+    # Create job and kick off background thread
+    job_id = str(uuid.uuid4())
+    job_set(job_id, status="running", progress=5, message="Starting analysis...")
 
-    cn=new_data.get("company_name","Unknown")
-    save_history(cn, new_data, excel_bytes)
-    safe=re.sub(r'[^\w\s-]','',cn).strip().replace(' ','_')
-    return send_file(io.BytesIO(excel_bytes),as_attachment=True,
-                     download_name=safe+"_analysis.xlsx",
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    t = threading.Thread(
+        target=run_analysis_job,
+        args=(job_id, combined_text, company_name, entry_id, existing_entry),
+        daemon=True
+    )
+    t.start()
+
+    return jsonify({"job_id": job_id}), 202
+
+
+@app.route('/analyze/status/<job_id>')
+@login_required
+def analyze_status(job_id):
+    job = job_get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({
+        "status":   job.get("status", "unknown"),
+        "progress": job.get("progress", 0),
+        "message":  job.get("message", ""),
+        "error":    job.get("error", ""),
+        "filename": job.get("filename", "")
+    })
+
+
+@app.route('/analyze/download/<job_id>')
+@login_required
+def analyze_download(job_id):
+    job = job_get(job_id)
+    if not job or job.get("status") != "done":
+        return "Job not ready or not found", 404
+    excel_bytes = job.get("excel_bytes")
+    filename = job.get("filename", "analysis.xlsx")
+    # Clean up job from memory after download
+    with JOBS_LOCK:
+        JOBS.pop(job_id, None)
+    return send_file(
+        io.BytesIO(excel_bytes),
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
 
 @app.route('/history/<entry_id>/download')
 @login_required
