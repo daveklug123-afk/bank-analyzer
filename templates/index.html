@@ -15,6 +15,17 @@
     --red:#FF6B6B; --red-bg:#2A0810;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
+  h1, h2, h3, p, label, div, span, .card-title, .header, .subtitle, .header-badge,
+  .card-header, .section-title, .history-name, .history-time, .step-badge,
+  .drop-title, .drop-sub, .step-num, .step-label, .footer-text {
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  input, button, a, .file-remove, .btn, .btn-sm, .drop-zone, .modal-dropzone {
+    cursor: pointer;
+  }
+  input[type=text] { cursor: text; }
   body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
   body::before { content:''; position:fixed; inset:0; background:radial-gradient(ellipse 100% 40% at 50% 0%, rgba(200,150,42,0.06) 0%, transparent 50%); pointer-events:none; }
   .topbar { position:sticky; top:0; z-index:100; background:rgba(10,10,18,0.9); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); padding:0 32px; display:flex; align-items:center; justify-content:space-between; height:56px; }
