@@ -86,10 +86,38 @@ def load_history():
             except: pass
     return entries
 
+def sanitize_data(obj):
+    if isinstance(obj, dict):
+        return {k: sanitize_data(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_data(i) for i in obj]
+    elif isinstance(obj, str):
+        result = []
+        for ch in obj:
+            cp = ord(ch)
+            if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue
+            if 0xD800 <= cp <= 0xDFFF: continue
+            if 0xFFFE <= cp <= 0xFFFF: continue
+            result.append(ch)
+        s = ''.join(result)
+        s = s.replace('–','-').replace('—','-')
+        s = s.replace('‘',"'").replace('’',"'")
+        s = s.replace('“','"').replace('”','"')
+        s = s.replace('•','*').replace(' ',' ')
+        s = s.replace('…','...').replace('−','-')
+        s = s.replace('·','*').replace('●','*')
+        return s
+    return obj
+
 def load_entry(entry_id):
     path = os.path.join(app.config['HISTORY_FOLDER'], entry_id + '.pkl')
     if not os.path.exists(path): return None
-    with open(path, 'rb') as f: return pickle.load(f)
+    with open(path, 'rb') as f:
+        entry = pickle.load(f)
+    # Sanitize data in case it was saved before the unicode fix
+    if 'data' in entry:
+        entry['data'] = sanitize_data(entry['data'])
+    return entry
 
 def parse_with_claude(raw_text, company_name=""):
     client = anthropic.Anthropic()
@@ -168,6 +196,30 @@ def parse_with_claude(raw_text, company_name=""):
     raw = re.sub(r'^```\s*','',raw)
     raw = re.sub(r'\s*```$','',raw)
     data = json.loads(raw)
+
+    # Sanitize all string values from AI output to prevent xlsx corruption
+    def clean_json(obj):
+        if isinstance(obj, dict):
+            return {k: clean_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [clean_json(i) for i in obj]
+        elif isinstance(obj, str):
+            # Remove surrogates and control chars that corrupt xlsx
+            result = []
+            for ch in obj:
+                cp = ord(ch)
+                if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue
+                if 0xD800 <= cp <= 0xDFFF: continue
+                if 0xFFFE <= cp <= 0xFFFF: continue
+                result.append(ch)
+            s = ''.join(result)
+            s = s.replace('\u2013','-').replace('\u2014','-')
+            s = s.replace('\u2018',"'").replace('\u2019',"'")
+            s = s.replace('\u201c','"').replace('\u201d','"')
+            s = s.replace('\u2022','*').replace('\u00a0',' ')
+            return s
+        return obj
+    data = clean_json(data)
 
     # Calculate monthly totals and total current positions
     total = 0
@@ -250,8 +302,22 @@ def build_excel(data):
     def safe_str(val):
         if val is None: return ""
         s = str(val)
-        # Remove illegal XML characters that corrupt xlsx
-        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
+        # Replace common unicode with ASCII equivalents
+        s = s.replace('\u2013', '-').replace('\u2014', '-')
+        s = s.replace('\u2018', "'").replace('\u2019', "'")
+        s = s.replace('\u201c', '"').replace('\u201d', '"')
+        s = s.replace('\u2022', '*').replace('\u2023', '*')
+        s = s.replace('\u2026', '...').replace('\u00a0', ' ')
+        s = s.replace('\u2212', '-').replace('\u00d7', 'x')
+        # Remove ALL characters that corrupt xlsx
+        result = []
+        for ch in s:
+            cp = ord(ch)
+            if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue
+            if 0xD800 <= cp <= 0xDFFF: continue  # surrogates - CORRUPT xlsx
+            if 0xFFFE <= cp <= 0xFFFF: continue   # specials
+            result.append(ch)
+        return ''.join(result)
 
     for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:14,8:40}.items():
         ws.column_dimensions[get_column_letter(col)].width=wd
@@ -519,6 +585,9 @@ def analyze():
     try: new_data=parse_with_claude(combined_text,company_name)
     except Exception as e: return jsonify({"error":"AI parsing failed: {}".format(str(e))}),500
 
+    # Always sanitize before building Excel
+    new_data = sanitize_data(new_data)
+
     if entry_id:
         existing = load_entry(entry_id)
         if existing:
@@ -542,8 +611,15 @@ def analyze():
 def download_history(entry_id):
     entry = load_entry(entry_id)
     if not entry: return "Not found", 404
+    # Regenerate Excel from sanitized data to fix any old corruption
+    try:
+        clean_data = sanitize_data(entry['data'])
+        excel = build_excel(clean_data)
+        excel_bytes = excel.read()
+    except:
+        excel_bytes = entry['excel']
     safe=re.sub(r'[^\w\s-]','',entry['company_name']).strip().replace(' ','_')
-    return send_file(io.BytesIO(entry['excel']),as_attachment=True,
+    return send_file(io.BytesIO(excel_bytes),as_attachment=True,
                      download_name=safe+"_analysis.xlsx",
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
