@@ -81,37 +81,67 @@ def parse_with_claude(raw_text, company_name=""):
     client = anthropic.Anthropic()
     cn = company_name if company_name else 'auto-detect'
     prompt = (
-        "You are an expert MCA underwriter analyzing bank statements. You are the LENDER.\n"
+        "You are an expert MCA (Merchant Cash Advance) underwriter analyzing bank statements.\n"
+        "You are the LENDER deciding whether to advance money to this business.\n"
         "Return ONLY valid JSON, no markdown, no explanation.\n\n"
-        "BANK STATEMENT TEXT (may contain multiple months):\n"
+        "BANK STATEMENT TEXT:\n"
         + raw_text[:80000] +
-        "\n\nCRITICAL INSTRUCTIONS:\n"
-        "1. Find EVERY statement period. Look for CHECKING SUMMARY headers and date ranges.\n"
-        "2. Extract ALL months found - do not skip any.\n"
-        "3. Most recent partial month gets is_mtd = true.\n\n"
-        "FOR EACH MONTH:\n"
-        "- total_deposits: Deposits and Additions total from CHECKING SUMMARY\n"
-        "- true_deposits: total_deposits minus MCA funding Fedwires and minus Online Transfer From Chk entries\n"
-        "- Shileno LLC wires are real client payments - KEEP in true deposits\n"
-        "- adb: average of all values in DAILY ENDING BALANCE table\n"
-        "- neg_days: count of negative balances in DAILY ENDING BALANCE table\n"
-        "- days_below_1000: count of balances under 1000 in DAILY ENDING BALANCE table\n"
-        "- funding_events: incoming Fedwire credits that are MCA loans\n\n"
-        "FOR CURRENT POSITIONS: find all recurring ACH debits in Electronic Withdrawals.\n"
-        "- amount = the recurring payment amount\n"
-        "- frequency = daily, weekly, bi-weekly, or monthly\n"
-        "- Use the most recent payment amount per lender\n\n"
-        "Return this JSON:\n"
+        "\n\n"
+        "=== CRITICAL EXTRACTION RULES ===\n\n"
+        "RULE 1 - CURRENT POSITIONS (MCA lenders taking recurring ACH debits):\n"
+        "- Look in the transaction history for recurring ACH debits labeled 'Business to Business ACH Debit'\n"
+        "- amount = the EXACT per-payment dollar amount (e.g. $450.00, not $9,900)\n"
+        "- frequency = how often they debit:\n"
+        "  * If the same company debits EVERY SINGLE BUSINESS DAY = 'daily'\n"
+        "  * If they debit once per week = 'weekly'\n"
+        "  * If they debit every other week = 'bi-weekly'\n"
+        "  * If they debit once per month = 'monthly'\n"
+        "  COUNT the actual debits in the statement to determine frequency\n"
+        "- DO NOT multiply the amount by frequency - report the raw per-payment amount\n"
+        "- Examples from a Wells Fargo statement: if CFGMS debits $450 on 1/2, 1/5, 1/6, 1/7... every day = daily at $450\n\n"
+        "RULE 2 - TRUE DEPOSITS (only real business revenue):\n"
+        "INCLUDE:\n"
+        "  - POS/credit card processor deposits (Stripe, Lightspeed, Square, Clover, Synchrony Mtot Dep)\n"
+        "  - eDeposit IN Branch (cash deposits)\n"
+        "  - Mobile Deposits\n"
+        "  - ACH credits from real customers/vendors (Segway, Beeline Connect, etc.)\n"
+        "  - Interest payments\n"
+        "EXCLUDE (these are NOT real revenue):\n"
+        "  - MCA funding credits (look for 'DC' suffix on known MCA company names, or wire credits from MCA lenders)\n"
+        "  - Any incoming wire or ACH credit labeled with an MCA company name (e.g. 'Ufce 8018930381 DC', 'Headwaycapital 1 D00...', 'Credit Capital S E-Bike Cen Feb 04')\n"
+        "  - Fiji SPV LLC wire (this is MCA funding)\n"
+        "  - Online transfers FROM personal/other business accounts (e.g. 'Online Transfer From Mitcham K Everyday Checking')\n"
+        "  - Book transfers between own accounts\n"
+        "  - Returned item credits (deposited item returned then redeposited)\n\n"
+        "RULE 3 - LEVERAGE PERCENTAGE:\n"
+        "  leverage_pct = (sum of all monthly MCA payment amounts / true monthly deposits) * 100\n"
+        "  Use the most recent FULL month for this calculation\n"
+        "  This shows what % of revenue is consumed by MCA repayments\n\n"
+        "RULE 4 - NSF / RETURNED ITEMS:\n"
+        "  Look for 'Items returned unpaid' section and 'Overdraft Fee' entries\n"
+        "  nsf_count = number of items in 'Items returned unpaid' section\n"
+        "  od_count = number of 'Overdraft Fee' charges\n\n"
+        "RULE 5 - MONTHS:\n"
+        "  Extract EVERY statement period found. Each has a 'Statement period activity summary'.\n"
+        "  Most recent partial month = is_mtd: true\n"
+        "  total_deposits = Deposits/Credits total from the summary box\n"
+        "  adb = Average collected balance from Interest summary section\n\n"
+        "Return this exact JSON structure:\n"
         '{"company_name":"string","account_number_last4":"string","num_bank_accounts":1,'
-        '"offer_decline":"DECLINE","holdback_pct":0.0,"sos_info":"","court_search_notes":"",'
+        '"offer_decline":"DECLINE","holdback_pct":0.0,"leverage_pct":0.0,'
+        '"sos_info":"","court_search_notes":"",'
         '"account_notes":[],'
-        '"current_positions":[{"lender":"name","amount":0.0,"frequency":"weekly","notes":""}],'
-        '"months":[{"month_label":"Mon-YY","period":"MM/DD to MM/DD","is_mtd":false,'
-        '"total_deposits":0.0,"true_deposits":0.0,"true_deposit_notes":"",'
+        '"current_positions":['
+        '{"lender":"name","amount":0.0,"frequency":"daily/weekly/bi-weekly/monthly","notes":""}'
+        '],'
+        '"months":['
+        '{"month_label":"Mon-YY","period":"MM/DD to MM/DD","is_mtd":false,'
+        '"total_deposits":0.0,"true_deposits":0.0,"true_deposit_exclusions":"",'
         '"neg_days":0,"nsf_count":0,"od_count":0,"num_transactions":0,'
         '"adb":0.0,"days_below_1000":0,'
         '"funding_events":[{"funder":"name","amount":0.0,"date":"MM/DD"}],'
-        '"notes":""}]}\n\n'
+        '"notes":""}'
+        ']}\n\n'
         "Company name if provided: " + cn
     )
     msg = client.messages.create(
@@ -124,12 +154,24 @@ def parse_with_claude(raw_text, company_name=""):
     raw = re.sub(r'^```\s*','',raw)
     raw = re.sub(r'\s*```$','',raw)
     data = json.loads(raw)
+
+    # Calculate monthly totals and total current positions
     total = 0
     for pos in data.get("current_positions", []):
         monthly = calc_monthly(pos.get("amount", 0), pos.get("frequency", "weekly"))
         pos["monthly_amount"] = monthly
         total += monthly
     data["total_current_positions"] = total
+
+    # Calculate leverage % if not already set
+    if not data.get("leverage_pct") and data.get("months"):
+        full_months = [m for m in data["months"] if not m.get("is_mtd")]
+        if full_months:
+            latest = full_months[0]
+            true_dep = latest.get("true_deposits", 0)
+            if true_dep > 0:
+                data["leverage_pct"] = round((total / true_dep) * 100, 2)
+
     return data
 
 def merge_data(existing, new_data):
@@ -142,7 +184,7 @@ def merge_data(existing, new_data):
     for p in new_data.get('current_positions', []):
         if p['lender'] not in existing_lenders:
             existing['current_positions'].append(p)
-    total = sum(p.get('monthly_amount', calc_monthly(p.get('amount',0), p.get('frequency','weekly')))
+    total = sum(calc_monthly(p.get('amount',0), p.get('frequency','weekly'))
                 for p in existing.get('current_positions', []))
     existing['total_current_positions'] = total
     return existing
@@ -152,7 +194,6 @@ def build_excel(data):
     ws = wb.active
     ws.title = "Analysis"
 
-    # Original light color scheme
     GOLD_PALE="FFF8E1"; LIGHT_YELLOW="FFFF99"; DARK_GOLD="8B6914"
     GREEN_BG="C6EFCE"; GREEN_FG="006100"; RED_BG="FFC7CE"; RED_FG="9C0006"
     BLUE="0070C0"; PURPLE_BG="EAD5F5"; GRAY="F2F2F2"
@@ -176,12 +217,13 @@ def build_excel(data):
 
     def merge(r1,c1,r2,c2): ws.merge_cells(start_row=r1,start_column=c1,end_row=r2,end_column=c2)
 
-    for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:14,8:36}.items():
+    for col,wd in {1:3,2:34,3:20,4:16,5:16,6:14,7:14,8:40}.items():
         ws.column_dimensions[get_column_letter(col)].width=wd
 
     row=1
     ws.row_dimensions[row].height=6; row+=1
 
+    # Header row
     ws.row_dimensions[row].height=26
     w(row,3,"Amounts ($) / No.",bold=True,sz=9,align="center",bg=GRAY)
     w(row,4,"frequency",sz=9,align="center",bg=GRAY,italic=True)
@@ -191,19 +233,17 @@ def build_excel(data):
     c.fill=PatternFill("solid",start_color=GREEN_BG)
     c.alignment=Alignment(horizontal="center",vertical="center")
     c.border=border_all()
+    # Empty checkbox cell - user clicks and types X
+    ac = ws.cell(row=row,column=6,value="")
+    ac.font=Font(bold=True,size=12,color=GREEN_FG)
+    ac.fill=PatternFill("solid",start_color=GREEN_BG)
+    ac.alignment=Alignment(horizontal="center",vertical="center")
+    ac.border=border_all()
     merge(row,7,row+1,8)
     c=ws.cell(row=row,column=7,value="Update Sheet\nTab Color")
     c.font=Font(bold=True,size=11)
     c.fill=PatternFill("solid",start_color=PURPLE_BG)
     c.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
-
-    # APPROVED checkbox - empty bordered cell, user types X to check
-    ac = ws.cell(row=row, column=6)
-    ac.value = ""
-    ac.font = Font(bold=True, size=12, color=GREEN_FG)
-    ac.fill = PatternFill("solid", start_color=GREEN_BG)
-    ac.alignment = Alignment(horizontal="center", vertical="center")
-    ac.border = border_all()
     row+=1
 
     ws.row_dimensions[row].height=22
@@ -212,20 +252,18 @@ def build_excel(data):
     c.fill=PatternFill("solid",start_color=RED_BG)
     c.alignment=Alignment(horizontal="center",vertical="center")
     c.border=border_all()
-
-    # DECLINED checkbox - empty bordered cell, user types X to check
-    dc = ws.cell(row=row, column=6)
-    dc.value = ""
-    dc.font = Font(bold=True, size=12, color=RED_FG)
-    dc.fill = PatternFill("solid", start_color=RED_BG)
-    dc.alignment = Alignment(horizontal="center", vertical="center")
-    dc.border = border_all()
+    dc = ws.cell(row=row,column=6,value="")
+    dc.font=Font(bold=True,size=12,color=RED_FG)
+    dc.fill=PatternFill("solid",start_color=RED_BG)
+    dc.alignment=Alignment(horizontal="center",vertical="center")
+    dc.border=border_all()
     row+=1
 
     ws.row_dimensions[row].height=6; row+=1
     ws.row_dimensions[row].height=18
     w(row,5,"☐",sz=16,align="center"); row+=1
 
+    # Company name
     ws.row_dimensions[row].height=24
     merge(row,2,row,6)
     c=ws.cell(row=row,column=2,value=data.get("company_name","COMPANY NAME").upper())
@@ -234,6 +272,7 @@ def build_excel(data):
     c.alignment=Alignment(horizontal="left",vertical="center")
     row+=1
 
+    # Offer/Decline
     ws.row_dimensions[row].height=20
     w(row,2,"OFFER / DECLINE",bold=True,ul=True,sz=10)
     w(row,3,"$0.00",sz=10,color=BLUE)
@@ -244,21 +283,28 @@ def build_excel(data):
 
     for note in data.get("account_notes",[])[:4]:
         ws.row_dimensions[row].height=15
-        clr="CC0000" if any(x in note.lower() for x in ["1,000","negative","nsf"]) else "000000"
+        clr="CC0000" if any(x in note.lower() for x in ["1,000","negative","nsf","returned","overdraft"]) else "000000"
         w(row,2,"*"+note,sz=9,italic=True,color=clr); row+=1
-
     for _ in range(max(0,3-len(data.get("account_notes",[])))):
         ws.row_dimensions[row].height=14; row+=1
 
+    # Holdback and Leverage
+    hb=data.get("holdback_pct",0)
+    lv=data.get("leverage_pct",0)
     ws.row_dimensions[row].height=18
     w(row,3,"Holdback %",bold=True,sz=10,align="right")
-    hb=data.get("holdback_pct",0)
     w(row,4,"{:.2f}%".format(hb),sz=10,align="center"); row+=1
 
     ws.row_dimensions[row].height=18
     w(row,2,"SOS",bold=True,ul=True,sz=10)
     w(row,3,"New Holdback %",bold=True,sz=10,align="right")
     w(row,4,"{:.2f}%".format(hb),sz=10,align="center"); row+=1
+
+    # Leverage % row
+    ws.row_dimensions[row].height=18
+    w(row,2,"Leverage %",bold=True,sz=10,color="CC0000" if lv > 50 else "000000")
+    w(row,3,"{:.2f}%".format(lv),bold=True,sz=11,align="center",
+      color="CC0000" if lv > 50 else GREEN_FG); row+=1
 
     ws.row_dimensions[row].height=16
     sos=data.get("sos_info","")
@@ -270,6 +316,7 @@ def build_excel(data):
     court=data.get("court_search_notes","")
     w(row,2,court if court else "*No court records found",sz=9,italic=True,wrap=True); row+=2
 
+    # Account number
     ws.row_dimensions[row].height=20
     acct=data.get("account_number_last4","")
     merge(row,2,row,4)
@@ -279,24 +326,29 @@ def build_excel(data):
     c.alignment=Alignment(horizontal="left",vertical="center")
     row+=2
 
+    # Current Positions
     ws.row_dimensions[row].height=18
     w(row,2,"Current Positions:",bold=True,ul=True,sz=10)
     total=data.get("total_current_positions",0)
-    w(row,3,"${:,.2f}".format(total) if total else "$0.00",bold=True,sz=10,color=BLUE,ul=True); row+=1
+    w(row,3,"${:,.2f}".format(total) if total else "$0.00",bold=True,sz=10,color=BLUE,ul=True)
+    w(row,5,"(monthly total)",sz=8,italic=True,color="808080"); row+=1
 
     for pos in data.get("current_positions",[]):
         ws.row_dimensions[row].height=15
         lender=pos.get("lender",""); amt=pos.get("amount",0)
         freq=pos.get("frequency","weekly"); notes=pos.get("notes","")
+        monthly=pos.get("monthly_amount", calc_monthly(amt, freq))
         w(row,2,lender,sz=9,color=BLUE)
         w(row,3,"${:,.2f}".format(amt) if amt else "",sz=9,align="right")
         if freq: w(row,4,"*"+freq,sz=9,italic=True)
-        if notes: w(row,5,"*"+notes,sz=9,italic=True,color="CC0000")
+        w(row,5,"= ${:,.2f}/mo".format(monthly),sz=8,italic=True,color="808080")
+        if notes: w(row,6,"*"+notes,sz=9,italic=True,color="CC0000")
         row+=1
 
     ws.row_dimensions[row].height=16
     w(row,2,"Other Loans / Positions:",bold=True,sz=10); row+=2
 
+    # Monthly sections
     for m in data.get("months",[]):
         label=m.get("month_label",""); period=m.get("period",""); is_mtd=m.get("is_mtd",False)
 
@@ -323,8 +375,8 @@ def build_excel(data):
         w(row,3,"${:,.2f}".format(trd),sz=10,color=BLUE)
         ntx=m.get("num_transactions",0)
         if is_mtd and ntx: w(row,4,str(ntx),sz=10,align="center",color=BLUE)
-        tnote=m.get("true_deposit_notes","")
-        if tnote: w(row,5,"*incl. "+tnote,sz=8,italic=True,color="808080",wrap=True)
+        excl=m.get("true_deposit_exclusions","")
+        if excl: w(row,5,"*excl. "+excl,sz=8,italic=True,color="808080",wrap=True)
         row+=1
 
         neg=m.get("neg_days",0); nsf=m.get("nsf_count",0); od=m.get("od_count",0)
@@ -341,7 +393,7 @@ def build_excel(data):
         adb=m.get("adb",0)
         w(row,2,"ADB (average daily balance)",sz=10)
         w(row,3,"${:,.2f}".format(adb),sz=10,color=BLUE)
-        w(row,4,"*calculated",sz=9,italic=True,color="808080"); row+=1
+        w(row,4,"*given" if adb else "*calculated",sz=9,italic=True,color="808080"); row+=1
 
         dl=m.get("days_below_1000",0)
         w(row,2,"Days below $1,000:",sz=10)
