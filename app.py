@@ -123,53 +123,188 @@ def load_entry(entry_id):
 # ===========================================================
 def run_rules_engine(raw_text):
     """
-    Scan raw transaction text for recurring same-amount ACH debits.
-    Returns detected MCA positions with high confidence.
+    Reads every ACH debit transaction individually.
+    - Groups multiple loans from the same company into one combined position.
+    - Detects stopped payments, amount changes, and completed loans.
+    - No pattern assumptions — every transaction line is read directly.
     """
-    detected = {}
-    # Match ACH debit lines: date, description, amount
+    # Parse every ACH debit line individually
     pattern = re.compile(
-        r'(\d{1,2}/\d{1,2})\s+.*?(?:Business to Business ACH Debit|ACH Debit)\s*[-–]\s*([A-Za-z0-9 &./\-]+?)\s+'
-        r'(?:Orig ID[:\s]+\S+\s+)?(?:Desc[:\s]+\S+\s+)?.*?([\d,]+\.\d{2})',
+        r'(\d{1,2}/\d{1,2})\s+<?\s*(?:Business to Business ACH Debit|ACH Debit)\s*[-–]\s*'
+        r'([A-Za-z0-9 &./\-]+?)\s+(?:\S+\s+)*?([\d,]+\.\d{2})',
         re.IGNORECASE
     )
+
+    # raw_transactions: list of (date, payee_raw, amount)
+    raw_transactions = []
     for m in pattern.finditer(raw_text):
-        date_str = m.group(1)
-        payee = re.sub(r'\s+', ' ', m.group(2).strip())[:40]
+        date_str = m.group(1).strip()
+        payee_raw = re.sub(r'\s+', ' ', m.group(2).strip())
         try:
             amt = float(m.group(3).replace(',',''))
         except:
             continue
-        key = (payee.lower(), amt)
-        if key not in detected:
-            detected[key] = {'payee': payee, 'amount': amt, 'dates': []}
-        detected[key]['dates'].append(date_str)
+        if amt <= 0:
+            continue
+        raw_transactions.append((date_str, payee_raw, amt))
+
+    if not raw_transactions:
+        return []
+
+    # Normalize company name — strip account numbers, reference codes, dates
+    def normalize_company(name):
+        # Remove trailing codes like "Cs1507", "xxxxx1234", "260204", "#28"
+        name = re.sub(r'\s+[A-Z0-9#]{4,}\s*$', '', name, flags=re.IGNORECASE)
+        name = re.sub(r'\s+\d{6}\s*$', '', name)
+        name = re.sub(r'\s+x{3,}\d+\s*$', '', name, flags=re.IGNORECASE)
+        # Take first 3 meaningful words as the company key
+        words = name.strip().split()
+        return ' '.join(words[:3]).lower()
+
+    # Group by normalized company name — combines multiple loans from same lender
+    by_company = defaultdict(list)
+    for date_str, payee_raw, amt in raw_transactions:
+        key = normalize_company(payee_raw)
+        by_company[key].append({
+            'date': date_str,
+            'payee_raw': payee_raw,
+            'amount': amt
+        })
+
+    # Determine sort order for dates (month/day strings)
+    def date_sort_key(d):
+        try:
+            parts = d.split('/')
+            return int(parts[0]) * 100 + int(parts[1])
+        except:
+            return 0
 
     positions = []
-    for (payee_lower, amt), info in detected.items():
-        count = len(info['dates'])
-        if count < 2:
+    for company_key, txns in by_company.items():
+        if len(txns) < 1:
             continue
-        # Determine frequency from count relative to typical month
-        if count >= 18:
-            freq = 'daily'
-        elif count >= 4:
-            freq = 'weekly'
-        elif count >= 2:
-            freq = 'bi-weekly'
+
+        # Sort transactions chronologically
+        txns.sort(key=lambda x: date_sort_key(x['date']))
+
+        # Find unique amounts for this company
+        amounts = [t['amount'] for t in txns]
+        unique_amounts = sorted(set(amounts))
+        most_recent_amt = txns[-1]['amount']
+        first_date = txns[0]['date']
+        last_date = txns[-1]['date']
+        count = len(txns)
+
+        # Check if multiple distinct loan amounts (same company, multiple loans)
+        # e.g. OnDeck has $3,544.69 AND $2,100.00 debiting separately
+        # Sum them if they appear in the same time window
+        if len(unique_amounts) > 1:
+            # Could be amount change OR multiple loans
+            # If different amounts appear on the SAME dates → multiple loans (combine)
+            # If earlier amounts then later amounts → amount changed
+            dates_per_amount = defaultdict(set)
+            for t in txns:
+                dates_per_amount[t['amount']].add(t['date'])
+
+            # Check overlap — if two amounts share dates, they are concurrent loans
+            amount_list = list(dates_per_amount.keys())
+            concurrent = False
+            if len(amount_list) >= 2:
+                dates_a = dates_per_amount[amount_list[0]]
+                dates_b = dates_per_amount[amount_list[1]]
+                if dates_a & dates_b:  # overlap in dates
+                    concurrent = True
+
+            if concurrent:
+                # Multiple concurrent loans — combine into one position
+                combined_amt = sum(unique_amounts)
+                # Use most common payee name as display name
+                display_name = max(set(t['payee_raw'] for t in txns),
+                                   key=lambda n: sum(1 for t in txns if t['payee_raw']==n))
+                display_name = display_name[:35]
+                loans_detail = ' + '.join(['${:,.2f}'.format(a) for a in sorted(unique_amounts)])
+                notes = 'Multiple loans combined: {} = ${:,.2f} per cycle'.format(loans_detail, combined_amt)
+                most_recent_amt = combined_amt
+            else:
+                # Amount changed over time
+                old_amt = txns[0]['amount']
+                new_amt = txns[-1]['amount']
+                change_txn = next((t for t in txns if t['amount'] != old_amt), None)
+                change_date = change_txn['date'] if change_txn else '?'
+                display_name = txns[-1]['payee_raw'][:35]
+                notes = 'Amount changed from ${:,.2f} to ${:,.2f} on {}'.format(
+                    old_amt, new_amt, change_date)
         else:
+            display_name = txns[-1]['payee_raw'][:35]
+            notes = ''
+
+        # Detect stopped payments — look for gap at end
+        # If the most recent date is significantly earlier than the end of statements
+        # we flag it, but only if we have enough months of data
+        all_dates = [t['date'] for t in txns]
+        last_month = max(date_sort_key(d) for d in all_dates)
+        # Find the latest month in the entire raw text
+        all_statement_dates = re.findall(r'\b(\d{1,2}/\d{1,2})\b', raw_text)
+        if all_statement_dates:
+            latest_statement = max(date_sort_key(d) for d in all_statement_dates)
+            # If last payment was more than 5 weeks before latest statement date
+            last_month_num = last_month // 100
+            last_day_num = last_month % 100
+            latest_month_num = latest_statement // 100
+            months_gap = latest_month_num - last_month_num
+            if months_gap >= 1 and count >= 2:
+                if 'changed' not in notes.lower():
+                    notes = ('stopped after {}'.format(last_date) +
+                             (' — possibly paid off' if count >= 4 else ' — verify status') +
+                             ('; ' + notes if notes else ''))
+
+        # Determine frequency by analyzing gaps between dates
+        # For combined loans, analyze gaps using only one loan's dates
+        if len(unique_amounts) > 1 and 'concurrent' in dir() and concurrent and len(amount_list) >= 2:
+            largest_amt = max(unique_amounts)
+            freq_txns = [t for t in txns if t['amount'] == largest_amt]
+        else:
+            freq_txns = txns
+
+        per_loan_count = len(freq_txns)
+        if per_loan_count == 1:
             freq = 'monthly'
+        elif per_loan_count >= 2:
+            # Calculate average gap in days (approximate)
+            gaps = []
+            for i in range(1, len(freq_txns)):
+                d1 = date_sort_key(freq_txns[i-1]['date'])
+                d2 = date_sort_key(freq_txns[i]['date'])
+                m1, day1 = d1 // 100, d1 % 100
+                m2, day2 = d2 // 100, d2 % 100
+                approx_days = (m2 - m1) * 30 + (day2 - day1)
+                if approx_days > 0:
+                    gaps.append(approx_days)
+            if gaps:
+                avg_gap = sum(gaps) / len(gaps)
+                if avg_gap <= 2:
+                    freq = 'daily'
+                elif avg_gap <= 9:
+                    freq = 'weekly'
+                elif avg_gap <= 18:
+                    freq = 'bi-weekly'
+                else:
+                    freq = 'monthly'
+            else:
+                freq = 'daily' if count >= 18 else 'weekly' if count >= 4 else 'bi-weekly'
+
         positions.append({
-            'lender': info['payee'],
-            'amount': amt,
+            'lender': display_name,
+            'amount': most_recent_amt,
             'frequency': freq,
             'occurrence_count': count,
-            'confidence': 1.0,  # deterministic
-            'notes': 'Auto-detected: {} debits seen'.format(count)
+            'confidence': 1.0,
+            'notes': notes,
+            'monthly_amount': calc_monthly(most_recent_amt, freq)
         })
 
     # Sort by monthly impact descending
-    positions.sort(key=lambda x: calc_monthly(x['amount'], x['frequency']), reverse=True)
+    positions.sort(key=lambda x: x['monthly_amount'], reverse=True)
     return positions
 
 # ===========================================================
@@ -291,16 +426,20 @@ def verify_with_claude(raw_text, parsed_data):
         "Current Positions:\n" + positions_summary +
         "\nMonthly Data:\n" + months_summary +
         "\n\nCheck for:\n"
-        "1. Any recurring ACH debits in the text NOT in the positions list\n"
+        "1. Any ACH debits in the text NOT in the positions list — even if only 1-2 occurrences\n"
         "2. Total deposits in text that don't match extracted values (>$500 difference)\n"
         "3. NSF/returned items in text not counted\n"
         "4. MCA funding wires included in true_deposits that should be excluded\n"
-        "5. Wrong frequency (e.g. daily lender listed as weekly)\n"
-        "6. ADB significantly different from what Interest Summary shows\n\n"
+        "5. Wrong frequency — verify by counting actual gaps between payment dates\n"
+        "6. ADB significantly different from what Interest Summary shows\n"
+        "7. Payments that STOPPED mid-statement with no note (lender in early months, absent in recent months)\n"
+        "8. Payment amounts that CHANGED with no note (same lender, different amounts at different times)\n"
+        "9. Same company listed as two separate positions when they should be combined into one\n"
+        "10. Single-occurrence debits that were missed because they appeared only once\n\n"
         "Return JSON array of issues found. Empty array [] if no issues.\n"
-        "Each issue: {\"type\": \"MISSING_POSITION|WRONG_AMOUNT|WRONG_FREQUENCY|WRONG_TOTAL|NSF_MISSED|ADB_WRONG|OTHER\","
-        " \"description\": \"clear explanation\", \"confidence\": 0.0-1.0}\n"
-        "Only flag real issues you can see in the source text. Do NOT flag things you cannot verify."
+        "Each issue: {\"type\": \"MISSING_POSITION|WRONG_AMOUNT|WRONG_FREQUENCY|WRONG_TOTAL|NSF_MISSED|ADB_WRONG|STOPPED_PAYMENT|AMOUNT_CHANGED|DUPLICATE_LENDER|OTHER\","
+        " \"description\": \"clear explanation with dates and amounts\", \"confidence\": 0.0-1.0}\n"
+        "Only flag real issues you can verify in the source text."
     )
 
     msg = client.messages.create(
@@ -334,17 +473,30 @@ def parse_with_claude(raw_text, company_name=""):
         + raw_text[:80000] +
         "\n\n"
         "=== CRITICAL EXTRACTION RULES ===\n\n"
-        "RULE 1 - CURRENT POSITIONS (MCA lenders taking recurring ACH debits):\n"
-        "- Look in the transaction history for recurring ACH debits labeled 'Business to Business ACH Debit'\n"
-        "- amount = the EXACT per-payment dollar amount (e.g. $450.00, not $9,900)\n"
-        "- frequency = how often they debit:\n"
-        "  * If the same company debits EVERY SINGLE BUSINESS DAY = 'daily'\n"
-        "  * If they debit once per week = 'weekly'\n"
-        "  * If they debit every other week = 'bi-weekly'\n"
-        "  * If they debit once per month = 'monthly'\n"
-        "  COUNT the actual debits in the statement to determine frequency\n"
-        "- DO NOT multiply the amount by frequency - report the raw per-payment amount\n"
-        "- Also return a confidence score 0.0-1.0 for each position\n\n"
+        "RULE 1 - CURRENT POSITIONS — READ EVERY TRANSACTION INDIVIDUALLY:\n"
+        "You MUST read every single ACH debit transaction line by line. Do NOT assume patterns.\n"
+        "Do NOT infer frequency from just a few instances — count every actual occurrence.\n\n"
+        "For each unique lender/payee that appears as a debit:\n"
+        "  a) List every date and amount they debited across all months\n"
+        "  b) amount = the most recent per-payment amount (use the last occurrence)\n"
+        "  c) frequency = determined ONLY by counting actual gaps between payments:\n"
+        "     - Debits on consecutive business days = 'daily'\n"
+        "     - Debits ~7 days apart = 'weekly'\n"
+        "     - Debits ~14 days apart = 'bi-weekly'\n"
+        "     - Debits ~30 days apart = 'monthly'\n"
+        "  d) If payments STOPPED mid-statement, note it: 'stopped after MM/DD'\n"
+        "  e) If payment AMOUNT CHANGED, note both amounts: 'was $X, changed to $Y on MM/DD'\n"
+        "  f) If only 1-2 payments exist across all months, still include it — do not ignore it\n"
+        "  g) If the final months show ZERO debits from a lender that appeared earlier,\n"
+        "     note it as 'possibly completed/paid off — last payment MM/DD'\n\n"
+        "SAME COMPANY MULTIPLE LOANS — COMBINE THEM:\n"
+        "  - If the SAME company appears with MULTIPLE different debit IDs or amounts\n"
+        "    (e.g. 'OnDeck Capital xxxxx1234' and 'OnDeck Capital xxxxx5678'),\n"
+        "    these are separate loans from the same lender.\n"
+        "  - Combine them into ONE position entry for that lender.\n"
+        "  - amount = combined total per payment cycle (sum both loan amounts)\n"
+        "  - notes = 'Two loans: $X + $Y = $Z per payment'\n"
+        "  - Do NOT create two separate rows for the same company.\n\n"
         "RULE 2 - TRUE DEPOSITS (only real business revenue):\n"
         "INCLUDE: POS/credit card processor deposits (Stripe, Lightspeed, Square, Clover, Synchrony Mtot Dep), "
         "eDeposit IN Branch, Mobile Deposits, ACH credits from real customers/vendors, Interest payments\n"
@@ -352,18 +504,16 @@ def parse_with_claude(raw_text, company_name=""):
         "Fiji SPV LLC wire, Online transfers FROM personal accounts, Book transfers between own accounts, "
         "Returned item credits\n\n"
         "RULE 3 - LEVERAGE PERCENTAGE:\n"
-        "  leverage_pct = (sum of all monthly MCA payment amounts / true monthly deposits) * 100\n"
-        "  Use the most recent FULL month for this calculation\n\n"
+        "  leverage_pct = (sum of all ACTIVE monthly MCA payment amounts / true monthly deposits) * 100\n"
+        "  Use the most recent FULL month. Only count lenders still actively debiting in that month.\n\n"
         "RULE 4 - NSF / RETURNED ITEMS:\n"
-        "  Look for 'Items returned unpaid' section and 'Overdraft Fee' entries\n"
-        "  nsf_count = number of items in 'Items returned unpaid' section\n"
-        "  od_count = number of 'Overdraft Fee' charges\n\n"
+        "  Count every entry in 'Items returned unpaid' section and every 'Overdraft Fee' charge.\n"
+        "  nsf_count = items in 'Items returned unpaid'\n"
+        "  od_count = number of 'Overdraft Fee' lines\n\n"
         "RULE 5 - MONTHS:\n"
-        "  Extract EVERY statement period found. Each has a 'Statement period activity summary'.\n"
-        "  Most recent partial month = is_mtd: true\n"
+        "  Extract EVERY statement period. Each has a 'Statement period activity summary'.\n"
         "  total_deposits = Deposits/Credits total from the summary box\n"
-        "  adb = Average collected balance from Interest summary section\n"
-        "  Also return confidence scores for key fields\n\n"
+        "  adb = Average collected balance from Interest summary\n\n"
         "Return this exact JSON structure:\n"
         '{"company_name":"string","account_number_last4":"string","num_bank_accounts":1,'
         '"offer_decline":"DECLINE","holdback_pct":0.0,"leverage_pct":0.0,'
