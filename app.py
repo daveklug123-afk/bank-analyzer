@@ -1,4 +1,4 @@
-import os, json, re, io, anthropic, pickle, base64, tempfile, urllib.request, urllib.parse
+import os, json, re, io, anthropic, pickle, base64, tempfile, urllib.request, urllib.parse, threading
 from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
 from werkzeug.utils import secure_filename
 import pdfplumber, openpyxl
@@ -1266,19 +1266,45 @@ def send_email_with_excel(to_addresses, company_name, excel_bytes, month_count, 
 def email_inbound():
     """
     Mailgun inbound parse webhook.
-    Subject line = company name.
-    Attachment = bank statement PDF.
-    Sends Excel reply to REPLY_TO_EMAIL addresses.
+    Responds immediately to prevent Mailgun retries, processes in background thread.
     """
+    # Capture form data and files BEFORE returning response
+    # (request context won't be available in background thread)
+    subject = request.form.get('subject', '').strip()
+    attachment_count = int(request.form.get('attachment-count', 0))
+    
+    saved_attachments = []
+    for i in range(1, attachment_count + 1):
+        att = request.files.get('attachment-{}'.format(i))
+        if att and att.filename:
+            ext = att.filename.rsplit('.', 1)[-1].lower()
+            if ext in ('pdf', 'csv', 'txt'):
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix='.' + ext, delete=False, dir='/tmp')
+                att.save(tmp.name)
+                saved_attachments.append(tmp.name)
+
+    # Start background processing thread
+    thread = threading.Thread(
+        target=process_email_async,
+        args=(subject, saved_attachments),
+        daemon=True
+    )
+    thread.start()
+
+    # Respond immediately so Mailgun doesn't retry
+    return jsonify({"status": "received"}), 200
+
+def process_email_async(subject, saved_attachments):
+    """Process email in background thread after responding to Mailgun."""
     try:
-        # Extract company name from subject
-        subject = request.form.get('subject', '').strip()
+        # Company name comes from subject line passed as argument
         if not subject:
             print("Email received with no subject — ignoring")
-            return jsonify({"status": "ignored", "reason": "no subject"}), 200
+            return
 
         company_name = subject.strip()
-        print("Email inbound for company: {}".format(company_name))
+        print("Email processing for company: {}".format(company_name))
 
         # Get reply addresses
         reply_env = os.environ.get('REPLY_TO_EMAIL', '')
@@ -1287,29 +1313,14 @@ def email_inbound():
             print("No REPLY_TO_EMAIL configured")
             return jsonify({"status": "error", "reason": "no reply address"}), 200
 
-        # Extract PDF attachments
-        attachments = []
-        attachment_count = int(request.form.get('attachment-count', 0))
-        
-        for i in range(1, attachment_count + 1):
-            att = request.files.get('attachment-{}'.format(i))
-            if att and att.filename:
-                ext = att.filename.rsplit('.', 1)[-1].lower()
-                if ext in ('pdf', 'csv', 'txt'):
-                    # Save to temp file
-                    tmp = tempfile.NamedTemporaryFile(
-                        suffix='.' + ext,
-                        delete=False,
-                        dir='/tmp'
-                    )
-                    att.save(tmp.name)
-                    attachments.append(tmp.name)
+        # Use pre-saved attachments passed from the route
+        attachments = saved_attachments
 
         if not attachments:
             print("No valid attachments found in email")
             # Send error reply
-            send_email_with_excel(reply_addresses, company_name, None, 0)
-            return jsonify({"status": "no_attachments"}), 200
+            print("No valid attachments for: {}".format(company_name))
+            return
 
         # Extract text from all attachments
         combined_text = ""
@@ -1325,7 +1336,7 @@ def email_inbound():
 
         if not combined_text.strip():
             print("No text extracted from attachments")
-            return jsonify({"status": "no_text"}), 200
+            return
 
         # Check Supabase for existing analysis of this company
         existing_id, existing_data = supabase_get_analysis(company_name)
@@ -1407,15 +1418,11 @@ def email_inbound():
         
         print("Email workflow complete. Sent: {}  Months: {}  Update: {}".format(
             sent, month_count, is_update))
-        
-        return jsonify({"status": "success", "company": company_name,
-                        "months": month_count, "is_update": is_update}), 200
 
     except Exception as e:
-        print("Email inbound error: {}".format(e))
+        print("Email async processing error: {}".format(e))
         import traceback
         traceback.print_exc()
-        return jsonify({"status": "error", "message": str(e)}), 200
 
 if __name__=='__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5001)))
