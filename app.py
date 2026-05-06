@@ -1,25 +1,10 @@
-import os, json, re, io, anthropic, pickle, base64, tempfile, urllib.request, urllib.parse
-from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for
-from werkzeug.utils import secure_filename
-import pdfplumber, openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from datetime import datetime
-from collections import defaultdict
+import os, json, re, io, anthropic, pickle from flask import Flask, request, jsonify, send_file, render_template, session, redirect, url_for from werkzeug.utils import secure_filename import pdfplumber, openpyxl from openpyxl.styles import Font, PatternFill, Alignment, Border, Side from openpyxl.utils import get_column_letter from datetime import datetime from collections import defaultdict
 
 app = Flask(**name**)
-app.secret_key = os.environ.get(‘SECRET_KEY’, ‘mca-analyzer-secret-2026’)
-app.config[‘UPLOAD_FOLDER’] = os.environ.get(‘UPLOAD_FOLDER’, ‘/tmp/uploads’)
-app.config[‘HISTORY_FOLDER’] = os.environ.get(‘HISTORY_FOLDER’, ‘/tmp/history’)
-app.config[‘MAX_CONTENT_LENGTH’] = 32 * 1024 * 1024
-ALLOWED_EXTENSIONS = {‘pdf’, ‘csv’, ‘txt’}
-os.makedirs(app.config[‘UPLOAD_FOLDER’], exist_ok=True)
-os.makedirs(app.config[‘HISTORY_FOLDER’], exist_ok=True)
+app.secret_key = os.environ.get(‘SECRET_KEY’, ‘mca-analyzer-secret-2026’) app.config[‘UPLOAD_FOLDER’] = os.environ.get(‘UPLOAD_FOLDER’, ‘/tmp/uploads’) app.config[‘HISTORY_FOLDER’] = os.environ.get(‘HISTORY_FOLDER’, ‘/tmp/history’) app.config[‘MAX_CONTENT_LENGTH’] = 32 * 1024 * 1024 ALLOWED_EXTENSIONS = {‘pdf’, ‘csv’, ‘txt’} os.makedirs(app.config[‘UPLOAD_FOLDER’], exist_ok=True) os.makedirs(app.config[‘HISTORY_FOLDER’], exist_ok=True)
 
 USERS = {
-os.environ.get(‘USERNAME1’, ‘dave’): os.environ.get(‘PASSWORD1’, ‘mca2026’),
-os.environ.get(‘USERNAME2’, ‘admin’): os.environ.get(‘PASSWORD2’, ‘analyze2026’),
-}
+os.environ.get(‘USERNAME1’, ‘dave’): os.environ.get(‘PASSWORD1’, ‘mca2026’), os.environ.get(‘USERNAME2’, ‘admin’): os.environ.get(‘PASSWORD2’, ‘analyze2026’), }
 
 def login_required(f):
 from functools import wraps
@@ -40,8 +25,7 @@ total = len(pdf.pages)
 if total <= 12:
 pages_to_read = list(range(total))
 else:
-pages_to_read = list(range(8)) + list(range(max(8, total-4), total))
-for i in pages_to_read:
+pages_to_read = list(range(8)) + list(range(max(8, total-4), total)) for i in pages_to_read:
 try:
 t = pdf.pages[i].extract_text()
 if t:
@@ -54,8 +38,7 @@ return “\n”.join(text_parts)
 
 def extract_text(path):
 ext = path.rsplit(’.’,1)[1].lower()
-if ext == ‘pdf’: return extract_text_from_pdf(path)
-with open(path,‘r’,encoding=‘utf-8’,errors=‘ignore’) as f: return f.read()
+if ext == ‘pdf’: return extract_text_from_pdf(path) with open(path,‘r’,encoding=‘utf-8’,errors=‘ignore’) as f: return f.read()
 
 def calc_monthly(amount, frequency):
 freq = (frequency or ‘weekly’).lower()
@@ -65,13 +48,10 @@ if ‘monthly’ in freq: return amount * 1
 return amount * 4
 
 def save_history(company_name, data, excel_bytes):
-safe = re.sub(r’[^\w\s-]’,’’,company_name).strip().replace(’ ‘,’*’)
-ts = datetime.now().strftime(’%Y%m%d*%H%M%S’)
+safe = re.sub(r’[^\w\s-]’,’’,company_name).strip().replace(’ ‘,’*’) ts = datetime.now().strftime(’%Y%m%d*%H%M%S’)
 entry_id = “{}_{}”.format(safe, ts)
-path = os.path.join(app.config[‘HISTORY_FOLDER’], entry_id + ‘.pkl’)
-with open(path, ‘wb’) as f:
-pickle.dump({‘id’:entry_id,‘company_name’:company_name,‘data’:data,‘excel’:excel_bytes,‘timestamp’:ts}, f)
-return entry_id
+path = os.path.join(app.config[‘HISTORY_FOLDER’], entry_id + ‘.pkl’) with open(path, ‘wb’) as f:
+pickle.dump({‘id’:entry_id,‘company_name’:company_name,‘data’:data,‘excel’:excel_bytes,‘timestamp’:ts}, f) return entry_id
 
 def load_history():
 entries = []
@@ -87,35 +67,28 @@ return entries
 
 def sanitize_data(obj):
 if isinstance(obj, dict):
-return {k: sanitize_data(v) for k, v in obj.items()}
-elif isinstance(obj, list):
+return {k: sanitize_data(v) for k, v in obj.items()} elif isinstance(obj, list):
 return [sanitize_data(i) for i in obj]
 elif isinstance(obj, str):
 result = []
 for ch in obj:
 cp = ord(ch)
-if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue
-if 0xD800 <= cp <= 0xDFFF: continue
-if 0xFFFE <= cp <= 0xFFFF: continue
+if cp < 0x20 and cp not in (0x09, 0x0a, 0x0d): continue if 0xD800 <= cp <= 0xDFFF: continue if 0xFFFE <= cp <= 0xFFFF: continue
 result.append(ch)
 s = ‘’.join(result)
 s = s.replace(’\u2013’,’-’).replace(’\u2014’,’-’)
 s = s.replace(’\u2018’,”’”).replace(’\u2019’,”’”)
 s = s.replace(’\u201c’,’”’).replace(’\u201d’,’”’)
-s = s.replace(’\u2022’,’*’).replace(’\u00a0’,’ ‘)
-s = s.replace(’\u2026’,’…’).replace(’\u2212’,’-’)
+s = s.replace(’\u2022’,’*’).replace(’\u00a0’,’ ‘) s = s.replace(’\u2026’,’…’).replace(’\u2212’,’-’)
 s = s.replace(’\u00b7’,’*’).replace(’\u25cf’,’*’)
 return s
 return obj
 
 def load_entry(entry_id):
-path = os.path.join(app.config[‘HISTORY_FOLDER’], entry_id + ‘.pkl’)
-if not os.path.exists(path): return None
-with open(path, ‘rb’) as f:
+path = os.path.join(app.config[‘HISTORY_FOLDER’], entry_id + ‘.pkl’) if not os.path.exists(path): return None with open(path, ‘rb’) as f:
 entry = pickle.load(f)
 if ‘data’ in entry:
-entry[‘data’] = sanitize_data(entry[‘data’])
-return entry
+entry[‘data’] = sanitize_data(entry[‘data’]) return entry
 
 # ===========================================================
 
@@ -132,17 +105,13 @@ Reads every ACH debit transaction individually.
 - Detects stopped payments, amount changes, and completed loans.
 - No pattern assumptions — every transaction line is read directly.
 “””
-# Parse every ACH debit line individually
-pattern = re.compile(
-r’(\d{1,2}/\d{1,2})\s+<?\s*(?:Business to Business ACH Debit|ACH Debit)\s*[-–]\s*’
+# Parse every ACH debit line individually pattern = re.compile( r’(\d{1,2}/\d{1,2})\s+<?\s*(?:Business to Business ACH Debit|ACH Debit)\s*[-–]\s*’
 r’([A-Za-z0-9 &./-]+?)\s+(?:\S+\s+)*?([\d,]+.\d{2})’,
 re.IGNORECASE
 )
 
 ```
-# raw_transactions: list of (date, payee_raw, amount)
-raw_transactions = []
-for m in pattern.finditer(raw_text):
+# raw_transactions: list of (date, payee_raw, amount) raw_transactions = [] for m in pattern.finditer(raw_text):
     date_str = m.group(1).strip()
     payee_raw = re.sub(r'\s+', ' ', m.group(2).strip())
     try:
@@ -156,8 +125,7 @@ for m in pattern.finditer(raw_text):
 if not raw_transactions:
     return []
 
-# Normalize company name — strip account numbers, reference codes, dates
-def normalize_company(name):
+# Normalize company name — strip account numbers, reference codes, dates def normalize_company(name):
     # Remove trailing codes like "Cs1507", "xxxxx1234", "260204", "#28"
     name = re.sub(r'\s+[A-Z0-9#]{4,}\s*$', '', name, flags=re.IGNORECASE)
     name = re.sub(r'\s+\d{6}\s*$', '', name)
@@ -166,9 +134,7 @@ def normalize_company(name):
     words = name.strip().split()
     return ' '.join(words[:3]).lower()
 
-# Group by normalized company name — combines multiple loans from same lender
-by_company = defaultdict(list)
-for date_str, payee_raw, amt in raw_transactions:
+# Group by normalized company name — combines multiple loans from same lender by_company = defaultdict(list) for date_str, payee_raw, amt in raw_transactions:
     key = normalize_company(payee_raw)
     by_company[key].append({
         'date': date_str,
@@ -176,8 +142,7 @@ for date_str, payee_raw, amt in raw_transactions:
         'amount': amt
     })
 
-# Determine sort order for dates (month/day strings)
-def date_sort_key(d):
+# Determine sort order for dates (month/day strings) def date_sort_key(d):
     try:
         parts = d.split('/')
         return int(parts[0]) * 100 + int(parts[1])
@@ -309,9 +274,7 @@ for company_key, txns in by_company.items():
     })
 
 # Sort by monthly impact descending
-positions.sort(key=lambda x: x['monthly_amount'], reverse=True)
-return positions
-```
+positions.sort(key=lambda x: x['monthly_amount'], reverse=True) return positions ```
 
 # ===========================================================
 
@@ -321,21 +284,15 @@ return positions
 
 def reconcile_balances(raw_text, parsed_months):
 “””
-For each month, check: beg_balance + deposits - withdrawals ≈ end_balance
-Returns list of reconciliation results.
+For each month, check: beg_balance + deposits - withdrawals ≈ end_balance Returns list of reconciliation results.
 “””
 results = []
-# Try to find beginning/ending balances from statement header
-beg_pattern = re.compile(r’[Bb]eginning [Bb]alance\s+$?([\d,]+.\d{2})’)
-end_pattern = re.compile(r’[Ee]nding [Bb]alance\s+[\d]+\s+$?([-\d,]+.\d{2})’)
+# Try to find beginning/ending balances from statement header beg_pattern = re.compile(r’[Bb]eginning [Bb]alance\s+$?([\d,]+.\d{2})’) end_pattern = re.compile(r’[Ee]nding [Bb]alance\s+[\d]+\s+$?([-\d,]+.\d{2})’)
 dep_pattern = re.compile(r’Deposits(?:/Credits)?\s+[\d]+\s+([\d,]+.\d{2})’)
 with_pattern = re.compile(r’(?:Withdrawals?/Debits?|Total Withdrawals?)\s*[-]?\s*([\d,]+.\d{2})’)
 
 ```
-beg_matches = beg_pattern.findall(raw_text)
-end_matches = end_pattern.findall(raw_text)
-dep_matches = dep_pattern.findall(raw_text)
-with_matches = with_pattern.findall(raw_text)
+beg_matches = beg_pattern.findall(raw_text) end_matches = end_pattern.findall(raw_text) dep_matches = dep_pattern.findall(raw_text) with_matches = with_pattern.findall(raw_text)
 
 for i, month in enumerate(parsed_months):
     if i >= len(beg_matches) or i >= len(end_matches):
@@ -363,9 +320,7 @@ for i, month in enumerate(parsed_months):
                              'discrepancy': diff})
     except:
         results.append({'month': month.get('month_label','?'), 'status': 'SKIP',
-                         'note': 'Could not parse balance figures'})
-return results
-```
+                         'note': 'Could not parse balance figures'}) return results ```
 
 # ===========================================================
 
@@ -378,8 +333,7 @@ def check_continuity(raw_text, parsed_months):
 Verify ending balance of month N = beginning balance of month N+1.
 “””
 flags = []
-beg_pattern = re.compile(r’[Bb]eginning [Bb]alance\s+$?([-\d,]+.\d{2})’)
-end_pattern = re.compile(r’[Ee]nding [Bb]alance\s+\S+\s+$?([-\d,]+.\d{2})’)
+beg_pattern = re.compile(r’[Bb]eginning [Bb]alance\s+$?([-\d,]+.\d{2})’) end_pattern = re.compile(r’[Ee]nding [Bb]alance\s+\S+\s+$?([-\d,]+.\d{2})’)
 begs = beg_pattern.findall(raw_text)
 ends = end_pattern.findall(raw_text)
 
@@ -423,15 +377,11 @@ Returns a list of review flags.
 “””
 client = anthropic.Anthropic()
 positions_summary = “\n”.join([
-“  - {}: ${:,.2f} {} (monthly=${:,.2f})”.format(
-p.get(‘lender’), p.get(‘amount’,0), p.get(‘frequency’,’’),
-calc_monthly(p.get(‘amount’,0), p.get(‘frequency’,‘weekly’))
+“  - {}: ${:,.2f} {} (monthly=${:,.2f})”.format( p.get(‘lender’), p.get(‘amount’,0), p.get(‘frequency’,’’), calc_monthly(p.get(‘amount’,0), p.get(‘frequency’,‘weekly’))
 ) for p in parsed_data.get(‘current_positions’, [])
 ])
 months_summary = “\n”.join([
-“  - {}: total_deposits=${:,.2f} true_deposits=${:,.2f} adb=${:,.2f} nsf={}”.format(
-m.get(‘month_label’), m.get(‘total_deposits’,0),
-m.get(‘true_deposits’,0), m.get(‘adb’,0), m.get(‘nsf_count’,0)
+“  - {}: total_deposits=${:,.2f} true_deposits=${:,.2f} adb=${:,.2f} nsf={}”.format( m.get(‘month_label’), m.get(‘total_deposits’,0), m.get(‘true_deposits’,0), m.get(‘adb’,0), m.get(‘nsf_count’,0)
 ) for m in parsed_data.get(‘months’, [])
 ])
 
@@ -528,11 +478,8 @@ prompt = (
 “  - notes = ‘Two loans: $X + $Y = $Z per payment’\n”
 “  - Do NOT create two separate rows for the same company.\n\n”
 “RULE 2 - TRUE DEPOSITS (only real business revenue):\n”
-“INCLUDE: POS/credit card processor deposits (Stripe, Lightspeed, Square, Clover, Synchrony Mtot Dep), “
-“eDeposit IN Branch, Mobile Deposits, ACH credits from real customers/vendors, Interest payments\n”
-“EXCLUDE: MCA funding credits (DC suffix on MCA names, wire credits from MCA lenders), “
-“Fiji SPV LLC wire, Online transfers FROM personal accounts, Book transfers between own accounts, “
-“Returned item credits\n\n”
+“INCLUDE: POS/credit card processor deposits (Stripe, Lightspeed, Square, Clover, Synchrony Mtot Dep), “ “eDeposit IN Branch, Mobile Deposits, ACH credits from real customers/vendors, Interest payments\n”
+“EXCLUDE: MCA funding credits (DC suffix on MCA names, wire credits from MCA lenders), “ “Fiji SPV LLC wire, Online transfers FROM personal accounts, Book transfers between own accounts, “ “Returned item credits\n\n”
 “RULE 3 - LEVERAGE PERCENTAGE:\n”
 “  leverage_pct = (sum of all ACTIVE monthly MCA payment amounts / true monthly deposits) * 100\n”
 “  Use the most recent FULL month. Only count lenders still actively debiting in that month.\n\n”
@@ -569,9 +516,7 @@ max_tokens=8000,
 messages=[{“role”:“user”,“content”:prompt}]
 )
 raw = msg.content[0].text.strip()
-raw = re.sub(r’^`json\s*','',raw) raw = re.sub(r'^`\s*’,’’,raw)
-raw = re.sub(r’\s*```$’,’’,raw)
-data = json.loads(raw)
+raw = re.sub(r’^`json\s*','',raw) raw = re.sub(r'^`\s*’,’’,raw) raw = re.sub(r’\s*```$’,’’,raw) data = json.loads(raw)
 
 ```
 # Sanitize AI output immediately
@@ -597,9 +542,7 @@ def clean_json(obj):
     return obj
 data = clean_json(data)
 
-# DEDUPLICATION — remove duplicate positions from AI output
-# Same lender + same amount + same frequency = one position, not two
-def dedup_positions(positions):
+# DEDUPLICATION — remove duplicate positions from AI output # Same lender + same amount + same frequency = one position, not two def dedup_positions(positions):
     seen = {}
     deduped = []
     for pos in positions:
@@ -649,8 +592,7 @@ return data
 ```
 
 def merge_data(existing, new_data):
-existing_labels = {m[‘month_label’] for m in existing.get(‘months’, [])}
-for m in new_data.get(‘months’, []):
+existing_labels = {m[‘month_label’] for m in existing.get(‘months’, [])} for m in new_data.get(‘months’, []):
 if m[‘month_label’] not in existing_labels:
 existing[‘months’].append(m)
 
@@ -666,15 +608,11 @@ def month_sort_key(m):
         return 0
 existing['months'].sort(key=month_sort_key, reverse=True)
 
-existing_lenders = {p['lender'] for p in existing.get('current_positions', [])}
-for p in new_data.get('current_positions', []):
+existing_lenders = {p['lender'] for p in existing.get('current_positions', [])} for p in new_data.get('current_positions', []):
     if p['lender'] not in existing_lenders:
         existing['current_positions'].append(p)
 total = sum(calc_monthly(p.get('amount',0), p.get('frequency','weekly'))
-            for p in existing.get('current_positions', []))
-existing['total_current_positions'] = total
-return existing
-```
+            for p in existing.get('current_positions', [])) existing['total_current_positions'] = total return existing ```
 
 # ===========================================================
 
@@ -800,8 +738,7 @@ row+=1
 for note in data.get("account_notes",[])[:4]:
     ws.row_dimensions[row].height=15
     clr="FFCC0000" if any(x in note.lower() for x in ["1,000","negative","nsf","returned","overdraft"]) else None
-    w(row,2,"*"+note,sz=9,italic=True,color=clr); row+=1
-for _ in range(max(0,3-len(data.get("account_notes",[])))):
+    w(row,2,"*"+note,sz=9,italic=True,color=clr); row+=1 for _ in range(max(0,3-len(data.get("account_notes",[])))):
     ws.row_dimensions[row].height=14; row+=1
 
 # Holdback, leverage
@@ -969,20 +906,14 @@ for m in months_sorted:
 # ===========================================================
 # REVIEW FLAGS SECTION
 # ===========================================================
-review_flags = data.get("review_flags", [])
-recon_results = data.get("reconciliation_results", [])
-continuity_flags = data.get("continuity_flags", [])
-verify_issues = data.get("verify_issues", [])
+review_flags = data.get("review_flags", []) recon_results = data.get("reconciliation_results", []) continuity_flags = data.get("continuity_flags", []) verify_issues = data.get("verify_issues", [])
 
 all_issues = []
 for r in recon_results:
     if r.get('status') == 'FLAG':
-        all_issues.append(("RECON", r.get('month','?'), r.get('note','')))
-for c_flag in continuity_flags:
-    all_issues.append(("CONTINUITY", c_flag.get('months','?'), c_flag.get('note','')))
-for v in verify_issues:
-    all_issues.append((v.get('type','VERIFY'), 'ALL', v.get('description','')))
-for rf in review_flags:
+        all_issues.append(("RECON", r.get('month','?'), r.get('note',''))) for c_flag in continuity_flags:
+    all_issues.append(("CONTINUITY", c_flag.get('months','?'), c_flag.get('note',''))) for v in verify_issues:
+    all_issues.append((v.get('type','VERIFY'), 'ALL', v.get('description',''))) for rf in review_flags:
     all_issues.append((rf.get('type','FLAG'), rf.get('month','?'), rf.get('reason','')))
 
 row += 1
@@ -1028,9 +959,7 @@ else:
         row+=1
 
 ws.freeze_panes="B7"
-out=io.BytesIO(); wb.save(out); out.seek(0)
-return out
-```
+out=io.BytesIO(); wb.save(out); out.seek(0) return out ```
 
 # ===========================================================
 
@@ -1038,8 +967,7 @@ return out
 
 # ===========================================================
 
-@app.route(’/login’, methods=[‘GET’,‘POST’])
-def login():
+@app.route(’/login’, methods=[‘GET’,‘POST’]) def login():
 error = None
 if request.method == ‘POST’:
 username = request.form.get(‘username’,’’).strip()
@@ -1062,9 +990,7 @@ def index():
 history = load_history()
 return render_template(‘index.html’, history=history)
 
-@app.route(’/analyze’, methods=[‘POST’])
-@login_required
-def analyze():
+@app.route(’/analyze’, methods=[‘POST’]) @login_required def analyze():
 if ‘files’ not in request.files: return jsonify({“error”:“No files uploaded”}),400
 files=request.files.getlist(‘files’)
 company_name=request.form.get(‘company_name’,’’)
@@ -1143,8 +1069,7 @@ except Exception as e:
 
 cn=new_data.get("company_name","Unknown")
 save_history(cn, new_data, excel_bytes)
-safe=re.sub(r'[^\w\s-]','',cn).strip().replace(' ','_')
-return send_file(io.BytesIO(excel_bytes),as_attachment=True,
+safe=re.sub(r'[^\w\s-]','',cn).strip().replace(' ','_') return send_file(io.BytesIO(excel_bytes),as_attachment=True,
                  download_name=safe+"_analysis.xlsx",
                  mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 ```
@@ -1155,357 +1080,15 @@ def download_history(entry_id):
 entry = load_entry(entry_id)
 if not entry: return “Not found”, 404
 try:
-clean_data = sanitize_data(entry[‘data’])
-excel = build_excel(clean_data)
-excel_bytes = excel.read()
+clean_data = sanitize_data(entry[‘data’]) excel = build_excel(clean_data) excel_bytes = excel.read()
 except:
 excel_bytes = entry[‘excel’]
-safe=re.sub(r’[^\w\s-]’,’’,entry[‘company_name’]).strip().replace(’ ‘,’_’)
-return send_file(io.BytesIO(excel_bytes),as_attachment=True,
+safe=re.sub(r’[^\w\s-]’,’’,entry[‘company_name’]).strip().replace(’ ‘,’_’) return send_file(io.BytesIO(excel_bytes),as_attachment=True,
 download_name=safe+”_analysis.xlsx”,
 mimetype=‘application/vnd.openxmlformats-officedocument.spreadsheetml.sheet’)
 
-@app.route(’/history/<entry_id>/delete’, methods=[‘POST’])
-@login_required
-def delete_history(entry_id):
-path = os.path.join(app.config[‘HISTORY_FOLDER’], entry_id + ‘.pkl’)
-if os.path.exists(path): os.remove(path)
-return redirect(url_for(‘index’))
-
-# ===========================================================
-
-# SUPABASE MEMORY HELPERS
-
-# ===========================================================
-
-SUPABASE_URL = os.environ.get(‘SUPABASE_URL’, ‘’)
-SUPABASE_KEY = os.environ.get(‘SUPABASE_KEY’, ‘’)
-
-def supabase_request(method, endpoint, data=None):
-“”“Make a request to Supabase REST API.”””
-url = SUPABASE_URL.rstrip(’/’) + ‘/rest/v1/’ + endpoint
-headers = {
-‘apikey’: SUPABASE_KEY,
-‘Authorization’: ’Bearer ’ + SUPABASE_KEY,
-‘Content-Type’: ‘application/json’,
-‘Prefer’: ‘return=representation’
-}
-body = json.dumps(data).encode(‘utf-8’) if data else None
-req = urllib.request.Request(url, data=body, headers=headers, method=method)
-try:
-with urllib.request.urlopen(req, timeout=10) as resp:
-return json.loads(resp.read().decode(‘utf-8’))
-except urllib.error.HTTPError as e:
-err = e.read().decode(‘utf-8’)
-print(“Supabase error {}: {}”.format(e.code, err))
-return None
-except Exception as ex:
-print(“Supabase request failed:”, ex)
-return None
-
-def company_key_from_name(name):
-“”“Normalize company name to a consistent key for matching.”””
-key = name.lower().strip()
-key = re.sub(r’[^a-z0-9 ]’, ‘’, key)
-key = re.sub(r’\s+’, ’ ’, key).strip()
-return key
-
-def supabase_get_analysis(company_name):
-“”“Look up existing analysis by company name.”””
-key = company_key_from_name(company_name)
-result = supabase_request(‘GET’,
-‘mca_analyses?company_key=eq.{}&order=updated_at.desc&limit=1’.format(
-urllib.parse.quote(key)))
-if result and len(result) > 0:
-row = result[0]
-return row[‘id’], row[‘entry_data’]
-return None, None
-
-def supabase_save_analysis(company_name, data, excel_bytes):
-“”“Save or update analysis in Supabase.”””
-key = company_key_from_name(company_name)
-row_id, existing = supabase_get_analysis(company_name)
-
-```
-payload = {
-    'company_name': company_name,
-    'company_key': key,
-    'entry_data': data,
-    'updated_at': datetime.now().isoformat()
-}
-
-if row_id:
-    # Update existing
-    supabase_request('PATCH',
-        'mca_analyses?id=eq.{}'.format(row_id),
-        payload)
-    return row_id
-else:
-    # Insert new
-    result = supabase_request('POST', 'mca_analyses', payload)
-    if result and len(result) > 0:
-        return result[0]['id']
-return None
-```
-
-# ===========================================================
-
-# MAILGUN EMAIL HELPER
-
-# ===========================================================
-
-def send_email_with_excel(to_addresses, company_name, excel_bytes, month_count, is_update=False):
-“”“Send Excel analysis via Mailgun API.”””
-mailgun_domain = os.environ.get(‘MAILGUN_DOMAIN’, ‘’)
-mailgun_key = os.environ.get(‘MAILGUN_API_KEY’, ‘’)
-
-```
-if not mailgun_domain or not mailgun_key:
-    print("Mailgun not configured")
-    return False
-
-subject = "{} - MCA Analysis{}".format(
-    company_name,
-    " (Updated)" if is_update else ""
-)
-
-body = """MCA Bank Statement Analysis — {}
-```
-
-{}
-Months analyzed: {}
-Generated: {}
-
-Please find the Excel analysis attached.
-
-—
-AURUM Studio MCA Analyzer
-“””.format(
-company_name,
-“This analysis has been updated with new statements.” if is_update else “Analysis complete.”,
-month_count,
-datetime.now().strftime(’%B %d, %Y at %I:%M %p’)
-)
-
-```
-safe_name = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')
-filename = safe_name + '_analysis.xlsx'
-
-# Build multipart form data for Mailgun API
-boundary = '----FormBoundary' + os.urandom(8).hex()
-
-def add_field(name, value):
-    return ('--' + boundary + '\r\n'
-            'Content-Disposition: form-data; name="{}"\r\n\r\n'
-            '{}\r\n').format(name, value).encode('utf-8')
-
-def add_file(name, filename, content, content_type):
-    return ('--' + boundary + '\r\n'
-            'Content-Disposition: form-data; name="{}"; filename="{}"\r\n'
-            'Content-Type: {}\r\n\r\n').encode('utf-8') + content + b'\r\n'
-
-parts = []
-# Add to each recipient
-for addr in to_addresses:
-    parts.append(add_field('to', addr))
-parts.append(add_field('from', 'MCA Analyzer <analyze@{}>'.format(mailgun_domain)))
-parts.append(add_field('subject', subject))
-parts.append(add_field('text', body))
-parts.append(add_file('attachment', filename, excel_bytes,
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
-parts.append(('--' + boundary + '--\r\n').encode('utf-8'))
-
-body_bytes = b''.join(parts)
-
-url = 'https://api.mailgun.net/v3/{}/messages'.format(mailgun_domain)
-credentials = base64.b64encode(('api:' + mailgun_key).encode('utf-8')).decode('utf-8')
-
-req = urllib.request.Request(
-    url,
-    data=body_bytes,
-    headers={
-        'Authorization': 'Basic ' + credentials,
-        'Content-Type': 'multipart/form-data; boundary=' + boundary,
-        'Content-Length': str(len(body_bytes))
-    },
-    method='POST'
-)
-
-try:
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read().decode('utf-8'))
-        print("Email sent:", result.get('message', 'OK'))
-        return True
-except urllib.error.HTTPError as e:
-    print("Mailgun send error {}: {}".format(e.code, e.read().decode('utf-8')))
-    return False
-except Exception as ex:
-    print("Email send failed:", ex)
-    return False
-```
-
-# ===========================================================
-
-# EMAIL INBOUND WEBHOOK ROUTE
-
-# ===========================================================
-
-@app.route(’/email-inbound’, methods=[‘POST’])
-def email_inbound():
-“””
-Mailgun inbound parse webhook.
-Subject line = company name.
-Attachment = bank statement PDF.
-Sends Excel reply to REPLY_TO_EMAIL addresses.
-“””
-try:
-# Extract company name from subject
-subject = request.form.get(‘subject’, ‘’).strip()
-if not subject:
-print(“Email received with no subject — ignoring”)
-return jsonify({“status”: “ignored”, “reason”: “no subject”}), 200
-
-```
-    company_name = subject.strip()
-    print("Email inbound for company: {}".format(company_name))
-
-    # Get reply addresses
-    reply_env = os.environ.get('REPLY_TO_EMAIL', '')
-    reply_addresses = [e.strip() for e in reply_env.split(',') if e.strip()]
-    if not reply_addresses:
-        print("No REPLY_TO_EMAIL configured")
-        return jsonify({"status": "error", "reason": "no reply address"}), 200
-
-    # Extract PDF attachments
-    attachments = []
-    attachment_count = int(request.form.get('attachment-count', 0))
-    
-    for i in range(1, attachment_count + 1):
-        att = request.files.get('attachment-{}'.format(i))
-        if att and att.filename:
-            ext = att.filename.rsplit('.', 1)[-1].lower()
-            if ext in ('pdf', 'csv', 'txt'):
-                # Save to temp file
-                tmp = tempfile.NamedTemporaryFile(
-                    suffix='.' + ext,
-                    delete=False,
-                    dir='/tmp'
-                )
-                att.save(tmp.name)
-                attachments.append(tmp.name)
-
-    if not attachments:
-        print("No valid attachments found in email")
-        # Send error reply
-        send_email_with_excel(reply_addresses, company_name, None, 0)
-        return jsonify({"status": "no_attachments"}), 200
-
-    # Extract text from all attachments
-    combined_text = ""
-    for fpath in attachments:
-        try:
-            combined_text += "\n\n=== FILE: {} ===\n".format(
-                os.path.basename(fpath)) + extract_text(fpath)
-        except Exception as e:
-            print("Failed to read {}: {}".format(fpath, e))
-        finally:
-            try: os.remove(fpath)
-            except: pass
-
-    if not combined_text.strip():
-        print("No text extracted from attachments")
-        return jsonify({"status": "no_text"}), 200
-
-    # Check Supabase for existing analysis of this company
-    existing_id, existing_data = supabase_get_analysis(company_name)
-    is_update = existing_id is not None
-    print("Existing analysis found: {}".format(is_update))
-
-    # Parse with Claude
-    try:
-        new_data = parse_with_claude(combined_text, company_name)
-    except Exception as e:
-        print("AI parsing failed: {}".format(e))
-        return jsonify({"status": "parse_error"}), 200
-
-    new_data = sanitize_data(new_data)
-
-    # Run validation layers
-    try:
-        rules_positions = run_rules_engine(combined_text)
-        existing_lenders = set()
-        for p in new_data.get('current_positions', []):
-            lender = p['lender'].lower()
-            lender_key = ' '.join(re.sub(r'\s+[a-z0-9#]{4,}\s*$', '', lender).split()[:3])
-            existing_lenders.add(lender_key)
-        for rp in rules_positions:
-            lender = rp['lender'].lower()
-            lender_key = ' '.join(re.sub(r'\s+[a-z0-9#]{4,}\s*$', '', lender).split()[:3])
-            if lender_key not in existing_lenders:
-                new_data.setdefault('current_positions', []).append({
-                    'lender': rp['lender'], 'amount': rp['amount'],
-                    'frequency': rp['frequency'], 'confidence': 1.0,
-                    'notes': rp['notes'],
-                    'monthly_amount': calc_monthly(rp['amount'], rp['frequency'])
-                })
-    except: pass
-
-    try:
-        new_data['reconciliation_results'] = reconcile_balances(
-            combined_text, new_data.get('months', []))
-    except: pass
-
-    try:
-        new_data['continuity_flags'] = check_continuity(
-            combined_text, new_data.get('months', []))
-    except: pass
-
-    try:
-        new_data['verify_issues'] = verify_with_claude(combined_text, new_data)
-    except: pass
-
-    # Merge with existing if found
-    if is_update and existing_data:
-        new_data = merge_data(existing_data, new_data)
-
-    # Build Excel
-    try:
-        excel_buf = build_excel(new_data)
-        excel_bytes = excel_buf.read()
-    except Exception as e:
-        print("Excel build failed: {}".format(e))
-        return jsonify({"status": "excel_error"}), 200
-
-    # Save to Supabase
-    try:
-        supabase_save_analysis(company_name, new_data, excel_bytes)
-    except Exception as e:
-        print("Supabase save failed: {}".format(e))
-
-    # Also save to local history
-    try:
-        save_history(company_name, new_data, excel_bytes)
-    except: pass
-
-    # Send email reply
-    month_count = len(new_data.get('months', []))
-    sent = send_email_with_excel(
-        reply_addresses, company_name, excel_bytes,
-        month_count, is_update=is_update
-    )
-    
-    print("Email workflow complete. Sent: {}  Months: {}  Update: {}".format(
-        sent, month_count, is_update))
-    
-    return jsonify({"status": "success", "company": company_name,
-                    "months": month_count, "is_update": is_update}), 200
-
-except Exception as e:
-    print("Email inbound error: {}".format(e))
-    import traceback
-    traceback.print_exc()
-    return jsonify({"status": "error", "message": str(e)}), 200
-```
+@app.route(’/history/<entry_id>/delete’, methods=[‘POST’]) @login_required def delete_history(entry_id):
+path = os.path.join(app.config[‘HISTORY_FOLDER’], entry_id + ‘.pkl’) if os.path.exists(path): os.remove(path) return redirect(url_for(‘index’))
 
 if **name**==’**main**’:
 app.run(debug=False, host=‘0.0.0.0’, port=int(os.environ.get(‘PORT’, 5001)))
