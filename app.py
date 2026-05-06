@@ -1211,30 +1211,19 @@ def supabase_save_analysis(company_name, data, excel_bytes):
 # MAILGUN EMAIL HELPER
 # ===========================================================
 def send_email_with_excel(to_addresses, company_name, excel_bytes, month_count, is_update=False):
-    """Send Excel analysis via Mailgun API."""
+    """Send Excel analysis via Mailgun API using requests library."""
+    import requests as req_lib
     mailgun_domain = os.environ.get('MAILGUN_DOMAIN', '')
     mailgun_key = os.environ.get('MAILGUN_API_KEY', '')
-    
+
     if not mailgun_domain or not mailgun_key:
         print("Mailgun not configured")
         return False
 
     subject = "{} - MCA Analysis{}".format(
-        company_name,
-        " (Updated)" if is_update else ""
-    )
-    
-    body = """MCA Bank Statement Analysis — {}
+        company_name, " (Updated)" if is_update else "")
 
-{}
-Months analyzed: {}
-Generated: {}
-
-Please find the Excel analysis attached.
-
-—
-AURUM Studio MCA Analyzer
-""".format(
+    body = "MCA Bank Statement Analysis - {}\n\n{}\nMonths analyzed: {}\nGenerated: {}\n\nPlease find the Excel analysis attached.\n\n—\nMCA Analyzer".format(
         company_name,
         "This analysis has been updated with new statements." if is_update else "Analysis complete.",
         month_count,
@@ -1244,54 +1233,28 @@ AURUM Studio MCA Analyzer
     safe_name = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')
     filename = safe_name + '_analysis.xlsx'
 
-    # Build multipart form data for Mailgun API
-    boundary = '----FormBoundary' + os.urandom(8).hex()
-    
-    def add_field(name, value):
-        return ('--' + boundary + '\r\n'
-                'Content-Disposition: form-data; name="{}"\r\n\r\n'
-                '{}\r\n').format(name, value).encode('utf-8')
-    
-    def add_file(name, filename, content, content_type):
-        return ('--' + boundary + '\r\n'
-                'Content-Disposition: form-data; name="{}"; filename="{}"\r\n'
-                'Content-Type: {}\r\n\r\n').encode('utf-8') + content + b'\r\n'
-
-    parts = []
-    # Add to each recipient
-    for addr in to_addresses:
-        parts.append(add_field('to', addr))
-    parts.append(add_field('from', 'MCA Analyzer <analyze@{}>'.format(mailgun_domain)))
-    parts.append(add_field('subject', subject))
-    parts.append(add_field('text', body))
-    parts.append(add_file('attachment', filename, excel_bytes,
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
-    parts.append(('--' + boundary + '--\r\n').encode('utf-8'))
-
-    body_bytes = b''.join(parts)
-
-    url = 'https://api.mailgun.net/v3/{}/messages'.format(mailgun_domain)
-    credentials = base64.b64encode(('api:' + mailgun_key).encode('utf-8')).decode('utf-8')
-    
-    req = urllib.request.Request(
-        url,
-        data=body_bytes,
-        headers={
-            'Authorization': 'Basic ' + credentials,
-            'Content-Type': 'multipart/form-data; boundary=' + boundary,
-            'Content-Length': str(len(body_bytes))
-        },
-        method='POST'
-    )
-    
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
-            print("Email sent:", result.get('message', 'OK'))
+        response = req_lib.post(
+            'https://api.mailgun.net/v3/{}/messages'.format(mailgun_domain),
+            auth=('api', mailgun_key),
+            data={
+                'from': 'MCA Analyzer <analyze@{}>'.format(mailgun_domain),
+                'to': to_addresses,
+                'subject': subject,
+                'text': body,
+            },
+            files=[
+                ('attachment', (filename, excel_bytes,
+                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
+            ],
+            timeout=30
+        )
+        if response.status_code == 200:
+            print("Email sent OK")
             return True
-    except urllib.error.HTTPError as e:
-        print("Mailgun send error {}: {}".format(e.code, e.read().decode('utf-8')))
-        return False
+        else:
+            print("Mailgun send error {}: {}".format(response.status_code, response.text))
+            return False
     except Exception as ex:
         print("Email send failed:", ex)
         return False
