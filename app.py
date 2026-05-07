@@ -420,8 +420,8 @@ def verify_with_claude(raw_text, parsed_data):
         "You are a second independent MCA underwriter reviewing extracted bank statement data.\n"
         "Your job is ONLY to find errors, contradictions, or missed items in the extraction.\n"
         "Return ONLY valid JSON array, no markdown.\n\n"
-        "SOURCE STATEMENT TEXT (first 20000 chars):\n"
-        + raw_text[:20000] +
+        "SOURCE STATEMENT TEXT (first 15000 chars):\n"
+        + raw_text[:15000] +
         "\n\nEXTRACTED DATA TO VERIFY:\n"
         "Current Positions:\n" + positions_summary +
         "\nMonthly Data:\n" + months_summary +
@@ -443,7 +443,7 @@ def verify_with_claude(raw_text, parsed_data):
     )
 
     msg = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-sonnet-4-20250514",
         max_tokens=2000,
         messages=[{"role":"user","content":prompt}]
     )
